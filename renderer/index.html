@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Marketmonitor</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="widget" title="拖动移动 · 右键 设置">
+    <button id="close-btn" title="退出">×</button>
+    <div id="rows">
+      <div id="track"></div>
+    </div>
+    <div id="status-bar" class="status-bar">
+      <span id="update-time">--</span>
+      <span class="dot"></span>
+      <span id="trading">休市</span>
+    </div>
+    <div id="alert-pop" class="alert-pop"></div>
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>

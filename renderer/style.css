@@ -1,0 +1,213 @@
+/* Marketmonitor - 小组件样式 */
+:root {
+  --up: #ef4444;      /* 涨 红 */
+  --down: #22c55e;    /* 跌 绿 */
+  --flat: #94a3b8;
+  --text: #0f172a;
+  --muted: #64748b;
+  --card-a: 1;        /* 卡片背景不透明度：只影响背景，文字恒清晰 */
+  --border: rgba(0,0,0,0.06);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent !important;
+  overflow: hidden;
+  font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#widget {
+  width: 100%;
+  height: 100%;
+  padding: 6px 8px 4px 8px;
+  border-radius: 12px;
+  /* 背景透明度由 --card-a 控制；文字/数字不受影响，始终清晰 */
+  background: rgba(255,255,255,var(--card-a, 1));
+  border: 1px solid rgba(0,0,0,calc(0.06 * var(--card-a, 1)));
+  backdrop-filter: blur(calc(14px * var(--card-a, 1)));
+  -webkit-backdrop-filter: blur(calc(14px * var(--card-a, 1)));
+  box-shadow: 0 4px 16px rgba(0,0,0,calc(0.10 * var(--card-a, 1)));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: default;
+  position: relative;
+  overflow: hidden;
+}
+/* 注意：不要给 #widget 加 -webkit-app-region: drag。
+   拖拽区由系统接管后，右键 contextmenu 事件会被吞掉（右键菜单失效）。
+   拖动改由 renderer.js 通过 IPC 通知主进程移动窗口实现。 */
+
+#close-btn {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 14px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  z-index: 20;
+}
+#widget:hover #close-btn { opacity: 1; }
+#close-btn:hover { background: #fee2e2; color: #ef4444; }
+
+/* ---------- 股票行容器 ---------- */
+#rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+#track {
+  will-change: transform;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  margin-bottom: 4px;   /* 与 renderer.js GAP 一致 */
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.3;
+  transition: background 0.2s ease;
+}
+.row:last-child { margin-bottom: 0; }
+
+/* 文字光晕随卡片透明度收敛：背景越淡光晕越弱，文字越纯净。
+   高透明度时仍保留微弱光晕保可读，深摸鱼模式下光晕近乎消失。 */
+.row .name,
+.row .price,
+.row .pct {
+  text-shadow: 0 0 3px rgba(255,255,255,calc(0.85 * var(--card-a, 1)));
+}
+
+.row .name {
+  color: var(--text);
+  font-weight: 700;                  /* 加粗与色块拉开层级 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.row .price {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;                  /* 价格/涨跌幅加粗：低透明度下也清晰锐利 */
+  white-space: nowrap;
+  text-align: right;
+}
+
+.row .pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  white-space: nowrap;
+  text-align: right;
+  min-width: 56px;
+}
+
+.row.up .price,
+.row.up .pct { color: var(--up); }
+.row.down .price,
+.row.down .pct { color: var(--down); }
+.row.flat .price,
+.row.flat .pct { color: var(--flat); }
+
+/* ---------- 异动高亮闪烁 ---------- */
+.row.flash {
+  animation: flashBg 1s ease-in-out infinite;
+}
+@keyframes flashBg {
+  0%, 100% { background: rgba(239,68,68,0.00); }
+  50%      { background: rgba(239,68,68,0.22); }
+}
+.row.flash.down-flash { animation-name: flashBgDown; }
+@keyframes flashBgDown {
+  0%, 100% { background: rgba(34,197,94,0.00); }
+  50%      { background: rgba(34,197,94,0.22); }
+}
+
+/* ---------- 状态栏 ---------- */
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  color: var(--muted);
+  padding: 0 4px;
+  opacity: 0.85;
+  flex: 0 0 auto;
+  /* 状态栏同样跟随透明度收敛（与正文一致） */
+  text-shadow: 0 0 3px rgba(255,255,255,calc(0.85 * var(--card-a, 1)));
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--flat);
+  box-shadow: 0 0 6px var(--flat);
+  flex: 0 0 auto;
+}
+.dot.trading { background: var(--up); box-shadow: 0 0 8px var(--up); }
+.dot.paused { background: var(--muted); box-shadow: none; }
+.dot.alert { animation: dotAlert 0.8s ease-in-out infinite; }
+@keyframes dotAlert {
+  0%, 100% { box-shadow: 0 0 6px var(--up); transform: scale(1); }
+  50%      { box-shadow: 0 0 12px var(--up); transform: scale(1.6); }
+}
+
+/* ---------- 异动提醒弹窗 ---------- */
+.alert-pop {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 22px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255,255,255,0.97);
+  border: 1px solid rgba(0,0,0,0.08);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.alert-pop.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.alert-pop .ap-name { color: var(--text); }
+.alert-pop .ap-pct.up { color: var(--up); }
+.alert-pop .ap-pct.down { color: var(--down); }
+
+.empty {
+  grid-column: span 3;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}

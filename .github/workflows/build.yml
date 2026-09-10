@@ -1,0 +1,70 @@
+# Marketmonitor 自动构建
+# 每次推送到默认分支或打 v* 版本 tag 时，自动跑 Windows NSIS 一键安装器，
+# 并上传 .exe 作为可下载产物，无需本地占用硬盘空间。
+name: Build Installer
+
+on:
+  push:
+    branches: [ "defaultbranchmain", "main", "master" ]
+    tags: [ "v*.*.*" ]
+  release:
+    types: [ published, created ]
+  # 允许在 Actions 页面手动触发
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  build:
+    name: Build (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build NSIS installer
+        run: npx electron-builder --win --x64 --publish never
+        env:
+          # 关闭签名（没有证书时跳过）
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Show build output
+        run: |
+          echo "==== dist 目录 ===="
+          Get-ChildItem -Recurse dist | Select-Object FullName, @{e={'{0:N0} B' -f $_.Length};n="Size"}
+
+      # 无论打 tag 与否，都把产物作为 workflow artifact 保留，方便下载查看
+      - name: Upload build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Marketmonitor-Setup
+          path: dist/*.exe
+          if-no-files-found: warn
+          retention-days: 90
+
+      # 如果是 release 事件或 v* tag，把安装包直接挂到该 Release 上（追加附件）
+      - name: Attach to Release
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $exe = Get-ChildItem dist/*.exe | Select-Object -First 1
+          if ($null -eq $exe) { Write-Error "no .exe found in dist"; exit 1 }
+          $tag = (git describe --tags --abbrev=0 2>$null)
+          if (-not $tag) { $tag = "v$((Get-Content package.json -Raw | ConvertFrom-Json).version)"; $null = gh release create $tag --draft 2>$null }
+          # 复用已存在的 release，把安装包作为 asset 上传
+          gh release upload "$tag" "$($exe.FullName)" --clobber

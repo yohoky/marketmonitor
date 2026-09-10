@@ -1,0 +1,30 @@
+# 依赖
+node_modules/
+
+# 构建产物（安装包 / 便携包，体积大，走 Release，不入库）
+dist/
+out/
+
+# 运行时数据与日志
+config.ini
+error.log
+*.log
+*.trigger
+
+# 临时 / 调试 / 快照
+_p/
+_v/
+_shots/
+_shots
+_*
+shots/
+
+# Windows / macOS / 编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+
+# 备份
+backups/

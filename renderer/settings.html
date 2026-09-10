@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="m2UcDPhoIbs9b1l4YK4lyN">
+<head data-page-node-id="N6FTBhn8t9zRmnA3Fc4yQ7">
+  <meta charset="UTF-8" data-page-node-id="fLJiCFzbG1JyoadMISN5Vi" />
+  <title>股票监控设置</title>
+  <link rel="stylesheet" href="settings.css" data-page-node-id="HsopC5O8CislVCGUVwmGtF" />
+</head>
+<body data-page-node-id="Bp1AdscNmJnkuteLmELZOA">
+  <div class="wrap" data-page-node-id="rHe6reNntnDNCDXkT2eTbx">
+    <header class="head" data-page-node-id="xblDHzyB9mdgOpa4wPgabU">
+      <span class="logo" data-page-node-id="7ZOlTBYM0Fk5BP1B7nwIYQ">📈</span>
+      <div class="head-text" data-page-node-id="N9Sam92E5BN2Ppk4qCrpn6">
+        <h1 data-page-node-id="Ui95GPQOlEMDTA1OLNyyxR">Marketmonitor 设置</h1>
+        <p class="sub" data-page-node-id="E5MwrA2zFVXQyABJCG7Jle">添加或批量粘贴 A 股股票代码，保存后小组件立即生效</p>
+      </div>
+      <span class="ver" data-page-node-id="eoNFQWZuFvU6k6DCqusIQR">v1.3</span>
+    </header>
+
+    <section class="card" data-page-node-id="eTqzjpdmK5qPVil5MmETzP">
+      <div class="card-title" data-page-node-id="aCz1VmnnnuB0ZSKI6L7dP1"><span class="bar" data-page-node-id="IOX0CaBfxDJI7kZ9Sy39aa"></span>当前监控列表 <span class="badge" id="count" data-page-node-id="wCoCOlIlH7mjAn6PjYrvjs">0</span></div>
+      <ul id="stock-list" class="stock-list" data-page-node-id="hldmfEGWcQuMyWgvOLtDF3"></ul>
+      <div class="empty" id="empty" data-page-node-id="TskmSEV0xpM2URasfH7bWJ">尚未添加股票，先在下方输入框中添加</div>
+      <div class="card-desc" style="margin-top:6px" data-page-node-id="AfVWAXFZE87wA6Pe7yhr3A">↑ ↓ 调整顺序（小组件按此顺序滚动展示）</div>
+    </section>
+
+    <section class="card" data-page-node-id="XWFOIl0Evgn1xtjaC3bHiP">
+      <div class="card-title" data-page-node-id="UzlHcKREy9alCqqEbiAndE"><span class="bar" data-page-node-id="3ZFG4XIjnBLDKbAC3Gtm2W"></span>快速添加</div>
+      <div class="row-ctrl" data-page-node-id="qwAfEHMJRcNpiqU890STa8">
+        <input id="symbol-input" placeholder="代码 600519 或 拼音缩写 gzmt/wly，回车添加，下拉选择候选" autocomplete="off" data-page-node-id="jlPb0CLZAJFuYRP0IZDhkW" />
+        <button id="add-btn" class="btn primary" data-page-node-id="hUIGTkyXtByzypVkNCgGub">添加</button>
+      </div>
+      <div id="candidate-list" class="candidate-list" style="display:none" data-page-node-id="ogpyCUgIVGajIKWmRg8KCQ"></div>
+      <div class="card-desc" style="margin-top:6px" data-page-node-id="M44fPi7jV27fs2B6ibyyYy">支持：6 位代码（sh/sz 自动补齐）· 拼音首字母（gzmt=贵州茅台，wly=五粮液）</div>
+    </section>
+
+    <section class="card" data-page-node-id="mO34aZCtAJnvimgwkvll6A">
+      <div class="card-title" data-page-node-id="hvaF3SN3vgnp2bSZOjxIXq"><span class="bar" data-page-node-id="wrSg8ezh1RKYhNDZwIHEsl"></span>批量粘贴</div>
+      <div class="card-desc" data-page-node-id="behQGDxOc61VLVZvTrukEb">支持一次粘贴多行 / 逗号 / 空格分隔，自动识别名称（若接口可取到则自动补齐）</div>
+      <textarea id="bulk-input" placeholder="600519 贵州茅台&#10;000858&#10;300750 宁德时代&#10;sz000001,sh601318"></textarea>
+      <div class="row-ctrl" data-page-node-id="5zb07mjo915bOd5KJGhV3z">
+        <button id="bulk-add" class="btn primary" data-page-node-id="QhrscouOlkDsWrHmL9AtYA">批量添加</button>
+        <button id="clear-btn" class="btn ghost" data-page-node-id="gYdxjjWjnXVhgYAjrC3FI9">清空列表</button>
+      </div>
+    </section>
+
+    <section class="card" data-page-node-id="vWo6oAmSP1RhYtz1yLRsoK">
+      <div class="card-title" data-page-node-id="biSMcpxcy20rOUjNsTlfeI"><span class="bar" data-page-node-id="cE7qofwJ8KLQjkxsimYeJG"></span>外观与尺寸</div>
+      <div class="size-row" data-page-node-id="Fq2i8n4XzIyutHGhVWDexq">
+        <label class="size-label" data-page-node-id="YfjOubrt8mnamvhsV6DkA1">宽
+          <input type="number" id="width-input" min="160" max="480" step="4" data-page-node-id="lQi9ZQ3f92s5e3ZX4gXU6f" />
+        </label>
+        <label class="size-label" data-page-node-id="J2HtxeDuniqf8vmeAL02Jl">高
+          <input type="number" id="height-input" min="60" max="600" step="4" data-page-node-id="ve9v7uDgVS1ezAatChZjif" />
+        </label>
+        <span class="card-desc" data-page-node-id="UWjTAaDKBAwEhgaBloiSeK">即时生效（像素）</span>
+      </div>
+      <div class="opacity-row" data-page-node-id="0bxnwpOIcyfgnwcWTkc3tG">
+        <label data-page-node-id="e6FukFis47inRXSYPXMRmQ">透明度
+          <input type="range" id="opacity-slider" min="0.05" max="1.0" step="0.05" data-page-node-id="oJQxy8TnerRgGUsDUZnRJF" />
+          <span id="opacity-val" class="opacity-val" data-page-node-id="3yoTqC32jvlb8B9kx1X39d">1.0</span>
+        </label>
+        <span class="card-desc" data-page-node-id="E5MgpHe3Tk83O4GWqa0AeV">摸鱼模式：可低至 0.05，小组件几乎透明</span>
+      </div>
+      <div class="size-row" style="margin-top:8px" data-page-node-id="lPHgo265ptPxwzeQshVyoc">
+        <label class="size-label" data-page-node-id="QY303FhNy5ekErHEsdTGfG">切换方式
+          <select id="display-mode" data-page-node-id="IuC3uu3jxTiVHR0rPavO5V">
+            <option value="scroll" data-page-node-id="2Tj0LrgABjHaufSRJbP6Ej">滚动（平滑循环）</option>
+            <option value="jump" data-page-node-id="oaLy2ZL9LH9pPBwuNNMGse">跳动（整屏翻页）</option>
+          </select>
+        </label>
+        <span class="card-desc" data-page-node-id="KOuEU0S8Ox62grAm3nGAW3">股票数 ≤ 可显示行数时不切换，全部同屏显示</span>
+      </div>
+      <div class="row-ctrl" style="margin-top:8px" data-page-node-id="gTinggRwIWp23ScLfpLOYo">
+        <label class="chk-label" data-page-node-id="OzUC6bfd9EmSOSdaeDQCjJ">
+          <input type="checkbox" id="topmost-chk" data-page-node-id="9pEuJ7YthrYm1L6p5mAHAA" /> 窗口置顶
+        </label>
+        <span id="opacity-hint" style="color:#94a3b8;font-size:12px" data-page-node-id="YYZuGC0HqVstRgCt7HhBhT"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-title"><span class="bar"></span>屏幕位置</div>
+      <div class="pos-wrap">
+        <div class="pos-grid" id="pos-grid">
+          <button type="button" class="pos-cell" data-anchor="top-left"     title="左上"></button>
+          <button type="button" class="pos-cell" data-anchor="top"          title="上中"></button>
+          <button type="button" class="pos-cell" data-anchor="top-right"    title="右上"></button>
+          <button type="button" class="pos-cell" data-anchor="left"         title="左中"></button>
+          <button type="button" class="pos-cell" data-anchor="center"       title="正中"></button>
+          <button type="button" class="pos-cell" data-anchor="right"        title="右中"></button>
+          <button type="button" class="pos-cell" data-anchor="bottom-left"  title="左下"></button>
+          <button type="button" class="pos-cell" data-anchor="bottom"       title="下中"></button>
+          <button type="button" class="pos-cell" data-anchor="bottom-right" title="右下（默认）"></button>
+        </div>
+        <div class="pos-side">
+          <div class="card-desc">点选九宫格，小组件立即归位。<br/>也可直接拖动小组件，位置会自动记住。</div>
+          <div class="pos-readout" id="pos-readout">X -- · Y --</div>
+          <button type="button" class="btn-mini" id="pos-default">回到右下角</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" data-page-node-id="uHxeHeDvmbLRxRysQr7QK8">
+      <div class="card-title" data-page-node-id="lULKlN4wTaMZffVUr84CNT"><span class="bar" data-page-node-id="HdfjmVnneuKmgKK4R5vFve"></span>异动提醒</div>
+      <div class="row-ctrl" style="margin-bottom:8px" data-page-node-id="gsNvSeWOGF6mYSXFEsbScQ">
+        <label class="chk-label" data-page-node-id="pQtaeuAFFYNItDNZtf7FN6">
+          <input type="checkbox" id="alert-enabled" data-page-node-id="i5HbiWE9HHeVYGZe7fPpqb" /> 启用异动提醒
+        </label>
+        <button id="alert-test" class="btn ghost" data-page-node-id="jR5qmnnAuX26quA7SfBZCS">试一下</button>
+      </div>
+      <div class="size-row" data-page-node-id="WsWU4OseuPaO6Bfyg9utFQ">
+        <label class="chk-label" style="flex:0 0 auto;min-width:88px" data-page-node-id="GCCwnGZ6PwtEySVDbymZyA">
+          <input type="checkbox" id="alert-up-on" data-page-node-id="gTKg2Uu7AKzT93ksgFVHEO" /> 涨幅 ≥
+        </label>
+        <label class="size-label" data-page-node-id="HdAe3hd9wNsXmWIeAMgXte">
+          <input type="number" id="alert-threshold-up" min="0.1" max="50" step="0.1" style="width:80px" data-page-node-id="h92M7tR5FDx0MXyb2WlltD" />
+          <span class="card-desc" data-page-node-id="15bLFt5K19y79MUxDVkDS2">% 触发（红）</span>
+        </label>
+      </div>
+      <div class="size-row" style="margin-top:8px" data-page-node-id="NLsx6bujE0MpHaZintW6bv">
+        <label class="chk-label" style="flex:0 0 auto;min-width:88px" data-page-node-id="aoGRoqKzgklBInoUcQgPnh">
+          <input type="checkbox" id="alert-down-on" data-page-node-id="jv4zSUnnCIbkCGAAgEOMsR" /> 跌幅 ≥
+        </label>
+        <label class="size-label" data-page-node-id="HB2VXZraIMKweuBErz1lCX">
+          <input type="number" id="alert-threshold-down" min="0.1" max="50" step="0.1" style="width:80px" data-page-node-id="0dGaPi18Usgdj4zAvpyEAI" />
+          <span class="card-desc" data-page-node-id="ykqpmC6fXQiPy4AneLgJte">% 触发（绿）</span>
+        </label>
+      </div>
+      <div class="size-row" style="margin-top:8px" data-page-node-id="97IY6AQteQupmBj5lH0svo">
+        <label class="size-label" data-page-node-id="tas6TVm1ayEnuD2UROSUWi">冷却
+          <select id="alert-cooldown" data-page-node-id="NOFCU6RXO30H6twaWZvhcD">
+            <option value="60000" data-page-node-id="xWspiHz2ZiU5B9xCbdJtg9">1 分钟</option>
+            <option value="180000" data-page-node-id="vfBoxlJUSQp9vfffHz46kf">3 分钟</option>
+            <option value="300000" data-page-node-id="haDEPApVmJstVHqsgTIiPI">5 分钟</option>
+            <option value="600000" data-page-node-id="BrpB6rEBrigi4J4PTNc145">10 分钟</option>
+            <option value="1800000" data-page-node-id="4DNiGKhkowAkfwQC9KCP0u">30 分钟</option>
+          </select>
+        </label>
+        <label class="chk-label" data-page-node-id="fruj1Jtbdl6fwfo1qq2Jy3">
+          <input type="checkbox" id="alert-sound" data-page-node-id="9l1SMYHfEmz8EAkLybkwW2" /> 提示音
+        </label>
+      </div>
+      <div class="card-desc" style="margin-top:6px" data-page-node-id="Fc2q8Dv0BZxznEGxZ1H81P">
+        涨幅、跌幅阈值<b data-page-node-id="EMeA2XIIkfeahhxFZpAsvX">可分别设置</b>（例如涨 3.9% / 跌 5%）。取消勾选即关闭该方向提醒。<br  data-page-node-id="EMaf1W67GJGmzAm7bT0dCQ"/>
+        触发后：系统通知 + 提示音 + 小组件对应行闪烁。冷却期内同一只不重复打扰。
+      </div>
+    </section>
+
+    <footer class="foot" data-page-node-id="YZ8VwwFkl4STjyBbALdbcr">
+      <span data-page-node-id="4BMw0zBQkPjY5GwTuXVhNd">共 <b id="count-foot" data-page-node-id="fBXjFE8ts88PquyaExC4fU">0</b> 只 · 30 秒刷新 · 右键小组件可打开本窗口</span>
+    </footer>
+  </div>
+  <script src="settings.js"></script>
+</body>
+</html>
