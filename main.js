@@ -57,6 +57,8 @@ const INI_TEMPLATE = `; ==================================================
 ;            direction   up(仅涨) / down(仅跌) / both(涨跌都提醒)
 ;            sound       true 播放提示音
 ;            cooldownMs  同一只股票的提醒冷却时间(毫秒)，防刷屏
+;            tradingHours 仅开盘时段提醒 true/false（默认 true）
+;                         时段=A股北京时间 09:25–11:35 / 12:55–15:05，周末除外
 ; ==================================================
 
 [stocks]
@@ -90,6 +92,7 @@ thresholdDown=3.9
 direction=both
 sound=true
 cooldownMs=180000
+tradingHours=true
 `;
 
 // 简单 INI 解析（满足本项目需求即可）
@@ -117,6 +120,7 @@ const DEFAULT_ALERTS = {
   direction: 'both',     // up(仅涨) / down(仅跌) / both(涨跌都提醒)
   sound: true,
   cooldownMs: 180000,    // 同一只 3 分钟内不重复提醒，防刷屏
+  tradingHours: true,    // 仅开盘时段提醒（A股北京时间两个连续竞价时段，周末除外）
 };
 
 // 阈值取值：优先用 thresholdUp / thresholdDown；旧配置的 threshold 作为兜底
@@ -141,6 +145,7 @@ function normalizeAlerts(raw) {
     direction: (dirRaw === 'up' || dirRaw === 'down' || dirRaw === 'none') ? dirRaw : 'both',
     sound: r['sound'] !== undefined ? (String(r['sound']) !== 'false') : DEFAULT_ALERTS.sound,
     cooldownMs: isFinite(cd) && cd >= 0 ? cd : DEFAULT_ALERTS.cooldownMs,
+    tradingHours: r['tradingHours'] !== undefined ? (String(r['tradingHours']) !== 'false') : DEFAULT_ALERTS.tradingHours,
   };
 }
 
@@ -256,6 +261,7 @@ function saveConfig() {
     lines.push('direction=' + a.direction);
     lines.push('sound=' + (a.sound ? 'true' : 'false'));
     lines.push('cooldownMs=' + a.cooldownMs);
+    lines.push('tradingHours=' + (a.tradingHours ? 'true' : 'false'));
     lines.push('');
     fs.writeFileSync(CONFIG_PATH, lines.join('\n'), 'utf8');
   } catch (_) {}
@@ -274,19 +280,35 @@ let lastQuotes = [];
 const alertState = new Map();
 
 /**
+ * 纯函数：某时刻是否处于 A 股开盘时段（北京时间 UTC+8，与本地时区无关，保证 CI/任意时区行为一致）。
+ * 时段：周一~周五，上午 09:25–11:35（含集合竞价）、下午 12:55–15:05（含尾盘收盘前后），与小组件"交易中"标识一致。
+ */
+function isInTradingHours(d) {
+  if (!(d instanceof Date) || isNaN(d.getTime())) return false;
+  const bj = new Date(d.getTime() + 8 * 3600 * 1000);   // 换算成北京时间
+  const wd = bj.getUTCDay();
+  if (wd === 0 || wd === 6) return false;               // 周末不开市
+  const hm = bj.getUTCHours() * 100 + bj.getUTCMinutes();
+  return (hm >= 925 && hm <= 1135) || (hm >= 1255 && hm <= 1505);
+}
+
+/**
  * 纯函数：按配置判定一批行情中哪些触发异动。
  * 规则：|涨跌幅| >= threshold，且方向匹配；同一只在 cooldownMs 内不重复；数值未变化不重复。
+ * 额外：tradingHours(默认 true) 时，仅在 A 股开盘时段内提醒，其余时段静默。
  */
 function evalAlerts(quotes, cfg, now) {
   const out = [];
+  const ts = now == null ? Date.now() : now;
   if (!cfg || !cfg.enabled || !Array.isArray(quotes)) return out;
+  // 仅开盘时段提醒：非 A 股成交时段（北京时间）整体静默，避免收盘后/夜间/周末仍轰炸
+  if (cfg.tradingHours !== false && !isInTradingHours(new Date(ts))) return out;
   // 涨 / 跌阈值可分别设置；只有旧字段 threshold 时作为兜底
   const legacy = Math.abs(parseFloat(cfg.threshold) || 0);
   const thUp = cfg.thresholdUp != null ? Math.abs(parseFloat(cfg.thresholdUp) || 0) : legacy;
   const thDown = cfg.thresholdDown != null ? Math.abs(parseFloat(cfg.thresholdDown) || 0) : legacy;
   const dir = cfg.direction || 'both';
   const cooldown = parseInt(cfg.cooldownMs, 10) || 0;
-  const ts = now == null ? Date.now() : now;
   for (const q of quotes) {
     if (!q || !q.symbol) continue;
     const pct = parseFloat(q.changePct);
@@ -942,7 +964,8 @@ if (triggered('test-alert') || process.env.MM_TEST_ALERT === '1') {
     { symbol: 'sh601318', name: '中国平安', price: 50, changePct: 1.20 },   // 不触发
   ];
   const base = { enabled: true, thresholdUp: 3.9, thresholdDown: 3.9, direction: 'both', sound: false, cooldownMs: 180000 };
-  const t0 = 1000000;
+  // 用固定 UTC 时间戳，换算成北京时间后落在盘中（周三 10:00），保证自检不受本机时区影响
+  const t0 = Date.UTC(2026, 8, 9, 2, 0, 0);   // = 北京 2026-09-09（周三）10:00，开盘窗口内
 
   log.push('--- case1 both/3.9 ---');
   log.push(JSON.stringify(evalAlerts(fake, base, t0).map(x => x.symbol + ':' + x.changePct)));
@@ -978,6 +1001,26 @@ if (triggered('test-alert') || process.env.MM_TEST_ALERT === '1') {
   alertState.clear();
   const s3 = evalAlerts([...mk('u', 4.9), ...mk('d', -2.9)], split, t0);
   log.push('涨4.9/跌-2.9 -> ' + JSON.stringify(s3.map(x => x.symbol)) + '  (期望 [])');
+  alertState.clear();
+
+  const tEvening = Date.UTC(2026, 8, 9, 12, 0, 0);   // = 北京 周三 20:00，收盘后
+  const tWeekend = Date.UTC(2026, 8, 12, 2, 0, 0);   // = 北京 周六 10:00，周末
+
+  log.push('--- case7 开盘窗口：北京 周三10:00（盘内）应触发 ---');
+  alertState.clear();
+  log.push('count=' + evalAlerts(fake, base, t0).length + '  (期望 3：平安/茅台/宁德)');
+
+  log.push('--- case8 开盘窗口：北京 周三20:00（收盘后）应静默 ---');
+  alertState.clear();
+  log.push('count=' + evalAlerts(fake, base, tEvening).length + '  (期望 0)');
+
+  log.push('--- case9 开盘窗口：周六（周末）应静默 ---');
+  alertState.clear();
+  log.push('count=' + evalAlerts(fake, base, tWeekend).length + '  (期望 0)');
+
+  log.push('--- case10 关闭开盘窗口限制：收盘后也提醒 ---');
+  alertState.clear();
+  log.push('count=' + evalAlerts(fake, { ...base, tradingHours: false }, tEvening).length + '  (期望 3)');
   alertState.clear();
 
   try {
