@@ -13,21 +13,29 @@ const PINYIN_API = 'https://searchapi.eastmoney.com/api/suggest/get';
 const PINYIN_TOKEN = 'D43BF722C8E33BDC906FB84D85E326E8';
 
 // ---------- 代码识别 ----------
-// 支持：600519 / sh600519 / 000858 / sz000858 / 300750
-// 规则：6/9 开头 = sh；0/2/3 开头 = sz；4/8 开头（北交所）暂不支持
+// 支持：A 股 / 基金(ETF/LOF) / 可转债
+// 规则（6 位数字）：
+//   沪 sh：6xxxxx(A股)  9xxxxx  5xxxxx(基金)  11xxxx(可转债)
+//   深 sz：0xxxxx/2xxxxx/3xxxxx(A股)  15xxxx/16xxxx/18xxxx(基金)  12xxxx(可转债)
+// 北交所(4/8 开头)暂不支持，可用 sh/sz 前缀手动加
 function normalizeSymbol(raw) {
   let s = String(raw || '').trim().toLowerCase();
   if (!s) return null;
   // 去除空格
   s = s.replace(/\s+/g, '');
-  // 已有 sh/sz 前缀
+  // 已有 sh/sz 前缀（A股/基金/可转债都可用前缀直接传）
   if (/^(sh|sz)\d{6}$/.test(s)) return s;
   // 6 位纯数字
   if (/^\d{6}$/.test(s)) {
     const head = s[0];
-    if (head === '6' || head === '9') return 'sh' + s;   // 沪市主板 / 科创板(688) / 沪市
-    if (head === '0' || head === '2' || head === '3') return 'sz' + s;  // 深市主板 / 中小 / 创业板
-    return null;   // 北交所（4/8 开头）暂不支持，需手动 sh/sz 前缀
+    // 沪市
+    if (head === '6' || head === '9' || head === '5') return 'sh' + s;   // A股(6)/沪(9)/基金(5)
+    if (s.indexOf('11') === 0) return 'sh' + s;                          // 沪可转债
+    // 深市
+    if (head === '0' || head === '2' || head === '3') return 'sz' + s;   // A股
+    if (s.indexOf('12') === 0 || s.indexOf('15') === 0 ||
+        s.indexOf('16') === 0 || s.indexOf('18') === 0) return 'sz' + s; // 深可转债(12)/基金(15/16/18)
+    return null;   // 其余(北交所 4/8 等)暂不支持
   }
   // 5 位 = 沪市 A 股（老式）
   if (/^\d{5}$/.test(s)) return 'sh' + ('0' + s);
@@ -110,7 +118,7 @@ async function addOne(raw) {
       if (pick) return addByCandidate(pick);
       return false;
     }
-    alert(`未找到匹配「${raw}」的股票，请输入 6 位代码或更精确的拼音缩写`);
+    alert(`未找到匹配「${raw}」的品种，请输入 6 位代码（股票/基金/可转债）或更精确的拼音缩写`);
     return false;
   }
   if (stocks.find(s => s.symbol === sym)) {
@@ -145,13 +153,19 @@ async function searchStocks(query, count = 5) {
     const json = await res.json();
     const data = json?.QuotationCodeTable?.Data || [];
     return data
-      .filter(x => x.Classify === 'AStock')
+      // A 股 + 基金 + 可转债（按市场号 沪1/深0 判 sh/sz，指数等排除）
+      .filter((x) => {
+        const mkt = Number(x.MktNum);
+        if ([0, 1, 105, 106].includes(mkt) && x.Code && String(x.Code).length === 6) return true;
+        return x.Classify === 'AStock';
+      })
       .map(x => ({
         code: x.Code,
         symbol: buildSymbol(x.Code, x.MktNum),
         name: x.Name,
         pinYin: x.PinYin,
-      }));
+      }))
+      .filter((x) => x.symbol && /^(sh|sz)\d{6}$/.test(x.symbol) && !/指数|指数$/.test(x.name || ''));
   } catch (e) {
     console.error('[searchStocks]', e.message);
     return [];
@@ -302,6 +316,30 @@ async function fetchStockName(sym) {
     if (name) return name;
   } catch (_) {}
   return sym;
+}
+
+// ---------- 名称自动补全 ----------
+// 监控列表里凡是"名称缺失"（name 为空 或 name===symbol）的品种，
+// 自动解析成中文名称：优先用实时行情已带的名称，其次向主进程查一次，
+// 成功后落库并刷新，只此一次（成功后 pending 为空，不再重复请求）。
+async function backfillNames() {
+  const pending = stocks.filter(s => !s.name || s.name === s.symbol);
+  if (pending.length === 0) return;
+  let dirty = false;
+  for (const s of pending) {
+    const q = lastQuotes.find(x => x.symbol === s.symbol);
+    let resolved = (q && q.name && q.name !== s.symbol) ? q.name : null;
+    if (!resolved) {
+      try {
+        const n = await window.stockApi.fetchStockName(s.symbol);
+        resolved = (n && n !== s.symbol) ? n : null;
+      } catch (_) { resolved = null; }
+    }
+    if (resolved) { s.name = resolved; dirty = true; }
+  }
+  if (dirty) {
+    try { await window.stockApi.saveStocks(stocks); renderList(); } catch (_) {}
+  }
 }
 
 // ---------- 透明度 + 置顶 + 尺寸 ----------
@@ -585,17 +623,19 @@ symbolInput.addEventListener('focus', () => {
   await loadWidgetCfg();   // 载入透明度/置顶/尺寸/切换方式当前值
   await loadAlertsCfg();   // 载入异动提醒配置
 
-  // 实时行情推送
-  window.stockApi.onQuotes((data) => {
-    lastQuotes = data || [];
-    renderList();
-  });
-
-  // 初次拉一次
+  // 初次拉一次行情（拿到名称后顺带补全列表里的名称）
   window.stockApi.getQuotes?.().then((d) => {
     if (d && d.length) {
       lastQuotes = d;
       renderList();
     }
+    backfillNames();   // 用行情名称 / IPC 查名，把"只有代码"的条目补全成名称
+  });
+
+  // 实时行情推送（每 30s：刷新价格 + 若有未补全名称则用行情名补）
+  window.stockApi.onQuotes((data) => {
+    lastQuotes = data || [];
+    renderList();
+    backfillNames();
   });
 })();
