@@ -158,10 +158,14 @@ function loadConfig() {
         const parts = code.split(/\s+/);
         let sym = parts[0].trim().toLowerCase();
         const name = parts.slice(1).join(' ');
-        // 纯 6 位数字 → 自动加 sh/sz 前缀
+        // 纯 6 位数字 → 自动加 sh/sz 前缀（A股/基金/可转债）
         if (/^\d{6}$/.test(sym)) {
           const h = sym[0];
-          sym = (h === '6' || h === '9') ? 'sh' + sym : 'sz' + sym;
+          if (h === '6' || h === '9' || h === '5') sym = 'sh' + sym;                    // 沪 A股/基金
+          else if (sym.indexOf('11') === 0) sym = 'sh' + sym;                            // 沪可转债
+          else if (h === '0' || h === '2' || h === '3') sym = 'sz' + sym;                // 深 A股
+          else if (sym.indexOf('12') === 0 || sym.indexOf('15') === 0 ||
+                   sym.indexOf('16') === 0 || sym.indexOf('18') === 0) sym = 'sz' + sym; // 深可转债/基金
         } else if (/^\d{5}$/.test(sym)) {
           sym = 'sh' + ('0' + sym);
         }
