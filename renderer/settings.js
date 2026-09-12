@@ -343,9 +343,10 @@ const alertThresholdUp = document.getElementById('alert-threshold-up');
 const alertThresholdDown = document.getElementById('alert-threshold-down');
 const alertCooldown = document.getElementById('alert-cooldown');
 const alertSound = document.getElementById('alert-sound');
+const alertTrading = document.getElementById('alert-trading');
 let alertsCfg = {
   enabled: true, thresholdUp: 3.9, thresholdDown: 3.9,
-  direction: 'both', sound: true, cooldownMs: 180000,
+  direction: 'both', sound: true, cooldownMs: 180000, tradingHours: true,
 };
 
 // 「涨幅 / 跌幅」两个勾选框 ⇄ direction 字段互转
@@ -371,6 +372,7 @@ async function loadAlertsCfg() {
   if (alertThresholdUp) alertThresholdUp.value = alertsCfg.thresholdUp ?? alertsCfg.threshold ?? 3.9;
   if (alertThresholdDown) alertThresholdDown.value = alertsCfg.thresholdDown ?? alertsCfg.threshold ?? 3.9;
   if (alertSound) alertSound.checked = alertsCfg.sound !== false;
+  if (alertTrading) alertTrading.checked = alertsCfg.tradingHours !== false;
   if (alertCooldown) {
     const cd = String(alertsCfg.cooldownMs ?? 180000);
     const opts = Array.from(alertCooldown.options).map(o => o.value);
@@ -497,6 +499,7 @@ posDefaultBtn?.addEventListener('click', () => moveTo('bottom-right'));
 // ---------- 异动提醒事件 ----------
 alertEnabled?.addEventListener('change', () => saveAlertsCfg({ enabled: alertEnabled.checked }));
 alertSound?.addEventListener('change', () => saveAlertsCfg({ sound: alertSound.checked }));
+alertTrading?.addEventListener('change', () => saveAlertsCfg({ tradingHours: alertTrading.checked }));
 alertCooldown?.addEventListener('change', () => saveAlertsCfg({ cooldownMs: parseInt(alertCooldown.value) }));
 
 // 涨 / 跌 分开：勾选框决定方向，两个输入框分别设置阈值
