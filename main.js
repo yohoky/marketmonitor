@@ -18,6 +18,12 @@ const iconv = require('iconv-lite');
 // Windows 通知需要 AppUserModelID，否则 toast 不显示
 try { app.setAppUserModelId('Marketmonitor'); } catch (_) {}
 
+// 部分机器显卡驱动下 GPU 进程会崩溃（GPU process exited unexpectedly），一旦独立 GPU 进程崩溃，
+// 透明 + alwaysOnTop 窗口的合成输出会变空白（进程活着、任务栏有预览，但屏上没内容）。
+// 用 in-process-gpu 让 GPU 跑在主进程内，规避"独立进程被杀"的崩溃场景，
+// 同时【保留硬件合成】，透明窗口正常绘制（比 blanket 关闭硬件加速更安全，不会把透明变黑块）。
+try { app.commandLine.appendSwitch('in-process-gpu'); } catch (_) {}
+
 // 应用目录：与 config.ini 同目录（打包后为 exe 同级，开发时为源码目录）
 const APP_DIR = app.isPackaged ? path.dirname(process.execPath) : __dirname;
 // 自检/自测触发器：命令行参数在部分 Electron 便携版会被拦截，
@@ -93,6 +99,7 @@ direction=both
 sound=true
 cooldownMs=180000
 tradingHours=true
+market=a
 `;
 
 // 简单 INI 解析（满足本项目需求即可）
@@ -120,7 +127,8 @@ const DEFAULT_ALERTS = {
   direction: 'both',     // up(仅涨) / down(仅跌) / both(涨跌都提醒)
   sound: true,
   cooldownMs: 180000,    // 同一只 3 分钟内不重复提醒，防刷屏
-  tradingHours: true,    // 仅开盘时段提醒（A股北京时间两个连续竞价时段，周末除外）
+  tradingHours: true,    // 仅开盘时段提醒（默认开启，周末除外）
+  market: 'a',           // 提醒市场：a(A股) / hk(港股) / both(A股+港股)
 };
 
 // 阈值取值：优先用 thresholdUp / thresholdDown；旧配置的 threshold 作为兜底
@@ -146,6 +154,7 @@ function normalizeAlerts(raw) {
     sound: r['sound'] !== undefined ? (String(r['sound']) !== 'false') : DEFAULT_ALERTS.sound,
     cooldownMs: isFinite(cd) && cd >= 0 ? cd : DEFAULT_ALERTS.cooldownMs,
     tradingHours: r['tradingHours'] !== undefined ? (String(r['tradingHours']) !== 'false') : DEFAULT_ALERTS.tradingHours,
+    market: ['a', 'hk', 'both'].includes((r['market'] || '').toLowerCase()) ? String(r['market']).toLowerCase() : DEFAULT_ALERTS.market,
   };
 }
 
@@ -266,6 +275,7 @@ function saveConfig() {
     lines.push('sound=' + (a.sound ? 'true' : 'false'));
     lines.push('cooldownMs=' + a.cooldownMs);
     lines.push('tradingHours=' + (a.tradingHours ? 'true' : 'false'));
+    lines.push('market=' + (['a', 'hk', 'both'].includes(a.market) ? a.market : 'a'));
     lines.push('');
     fs.writeFileSync(CONFIG_PATH, lines.join('\n'), 'utf8');
   } catch (_) {}
@@ -283,17 +293,32 @@ let lastQuotes = [];
 // alertState: symbol -> { ts, pct }  用于去刷屏（冷却期 + 数值未变化不重复提醒）
 const alertState = new Map();
 
+// ---------- 各市场连续竞价时段（均为 UTC+8，与本地时区无关，保证 CI/任意时区行为一致）----------
+// A股：周一~五，上午 09:25–11:35（含集合竞价）、下午 12:55–15:05（含尾盘收盘前后），与小组件"交易中"标识一致
+const A_SHARE_HOURS = [[925, 1135], [1255, 1505]];
+// 港股：周一~五，上午 09:00–12:00（含开盘前竞价）、下午 13:00–16:00（含收盘后短暂缓冲）
+const HK_SHARE_HOURS = [[900, 1200], [1300, 1605]];
+function inWindows(hm, windows) {
+  for (const [lo, hi] of windows) if (hm >= lo && hm <= hi) return true;
+  return false;
+}
+
 /**
- * 纯函数：某时刻是否处于 A 股开盘时段（北京时间 UTC+8，与本地时区无关，保证 CI/任意时区行为一致）。
- * 时段：周一~周五，上午 09:25–11:35（含集合竞价）、下午 12:55–15:05（含尾盘收盘前后），与小组件"交易中"标识一致。
+ * 纯函数：某时刻是否处于指定市场开盘时段。
+ * @param d Date
+ * @param market 'a'(A股,默认) / 'hk'(港股) / 'both'(A股+港股)
  */
-function isInTradingHours(d) {
+function isInTradingHours(d, market) {
   if (!(d instanceof Date) || isNaN(d.getTime())) return false;
-  const bj = new Date(d.getTime() + 8 * 3600 * 1000);   // 换算成北京时间
+  const bj = new Date(d.getTime() + 8 * 3600 * 1000);   // 换算成北京时间（与港股同为 UTC+8）
   const wd = bj.getUTCDay();
   if (wd === 0 || wd === 6) return false;               // 周末不开市
   const hm = bj.getUTCHours() * 100 + bj.getUTCMinutes();
-  return (hm >= 925 && hm <= 1135) || (hm >= 1255 && hm <= 1505);
+  const m = market || 'a';
+  if (m === 'a') return inWindows(hm, A_SHARE_HOURS);
+  if (m === 'hk') return inWindows(hm, HK_SHARE_HOURS);
+  if (m === 'both') return inWindows(hm, A_SHARE_HOURS) || inWindows(hm, HK_SHARE_HOURS);
+  return inWindows(hm, A_SHARE_HOURS);
 }
 
 /**
@@ -305,8 +330,8 @@ function evalAlerts(quotes, cfg, now) {
   const out = [];
   const ts = now == null ? Date.now() : now;
   if (!cfg || !cfg.enabled || !Array.isArray(quotes)) return out;
-  // 仅开盘时段提醒：非 A 股成交时段（北京时间）整体静默，避免收盘后/夜间/周末仍轰炸
-  if (cfg.tradingHours !== false && !isInTradingHours(new Date(ts))) return out;
+  // 仅开盘时段提醒：非成交时段（北京时间，按所选市场 A股/港股）整体静默，避免收盘后/夜间/周末仍轰炸
+  if (cfg.tradingHours !== false && !isInTradingHours(new Date(ts), cfg.market)) return out;
   // 涨 / 跌阈值可分别设置；只有旧字段 threshold 时作为兜底
   const legacy = Math.abs(parseFloat(cfg.threshold) || 0);
   const thUp = cfg.thresholdUp != null ? Math.abs(parseFloat(cfg.thresholdUp) || 0) : legacy;
@@ -461,11 +486,27 @@ function computeDefaultPosition() {
   return computeAnchoredPosition('bottom-right');
 }
 
+// 校验窗口是否在【当前主屏幕工作区】内可见（换显示器 / 分辨率 / DPI 变化后，
+// 旧坐标可能整块跑到屏外，表现为"任务栏有预览但桌面看不到"）。
+// 要求至少有 TOL 像素落在屏内，才算"在屏上"。
+function ensureOnScreen(pos, winW, winH) {
+  try {
+    const wa = screen.getPrimaryDisplay().workArea;
+    const TOL = 24;
+    const okX = (pos.x + winW) > wa.x + TOL && pos.x < wa.x + wa.width - TOL;
+    const okY = (pos.y + winH) > wa.y + TOL && pos.y < wa.y + wa.height - TOL;
+    return okX && okY;
+  } catch (_) { return true; }
+}
+
 // ---------- 创建小组件窗口 ----------
 function createWidgetWindow() {
   const cfg = store.widget;
   let pos = cfg.position;
-  if (!pos || pos.x === 0 && pos.y === 0) pos = computeDefaultPosition();
+  // 核心修复：config 里可能存着换屏前的大坐标（如 2008,1260），已跑到当前屏幕外，
+  // 导致"任务栏有预览但桌面看不到"。这里检测越界，越界就回退默认右下角，保证启动必可见。
+  const useDefault = !pos || (pos.x === 0 && pos.y === 0) || !ensureOnScreen(pos, cfg.width || 220, cfg.height || 88);
+  if (useDefault) pos = computeDefaultPosition();
 
   widgetWindow = new BrowserWindow({
     width: cfg.width,
@@ -530,21 +571,34 @@ function createWidgetWindow() {
     // 启动贴角精修：若 config 保存的位置在贴角容差内，帮用户对齐到精确像素；
     // 用户拖到中间时不打扰。两次 ready-to-show 只挂第二个监听，里面只挂一次。
   });
-  // 单独挂第二个 ready-to-show 完成贴角精修
+  // 单独挂第二个 ready-to-show 完成贴角精修 + 越界拉回 + 启动位置自检日志
   widgetWindow.once('ready-to-show', () => {
+    const wa = (() => { try { const w = screen.getPrimaryDisplay().workArea; return { x: w.x, y: w.y, w: w.width, h: w.height }; } catch (_) { return null; } })();
+    let finalP = null, sz = null, onScreen = null, wasClamped = false;
     try {
       const p = widgetWindow.getPosition();
-      const sz = widgetWindow.getSize();
+      sz = widgetWindow.getSize();
       const a = detectCorner({ x: p[0], y: p[1] }, { width: sz[0], height: sz[1] });
-      if (a) {
-        const np = computeAnchoredPosition(a);
-        if (np.x !== p[0] || np.y !== p[1]) {
-          widgetWindow.setPosition(np.x, np.y);
-          store.widget.position = np;
-          saveConfig();
-        }
+      let np = a ? computeAnchoredPosition(a) : null;
+      // 关键：如果当前坐标不在屏内（换屏/换分辨率后跑飞），强制拉回默认右下角
+      if (!np || !ensureOnScreen(np, sz[0], sz[1])) {
+        np = computeDefaultPosition();
+        wasClamped = true;
       }
+      if (np.x !== p[0] || np.y !== p[1]) {
+        widgetWindow.setPosition(np.x, np.y);
+        store.widget.position = np;
+      }
+      finalP = { x: np.x, y: np.y };
+      onScreen = ensureOnScreen(np, sz[0], sz[1]);
+      saveConfig();
     } catch (e) { logErr('startup-snap', e); }
+    // 启动自检日志：记录实际屏幕工作区 + 窗口最终落点，便于确认"为什么看不到"
+    try {
+      const baseDir = APP_DIR;
+      const line = JSON.stringify({ t: new Date().toISOString(), wa, finalP, sz, onScreen, wasClamped, cfgPos: store.widget.position }) + '\n';
+      fs.appendFileSync(path.join(baseDir, 'screenlog.txt'), line, 'utf8');
+    } catch (_) {}
   });
   widgetWindow.loadFile('renderer/index.html');
 
