@@ -130,7 +130,14 @@
         <label class="chk-label" style="flex:0 0 auto;min-width:120px">
           <input type="checkbox" id="alert-trading" checked /> 仅开盘时段提醒
         </label>
-        <span class="card-desc">只在 A 股盘中（北京时间 09:25–11:35 / 12:55–15:05，周末除外）提醒，收盘后 / 夜间不打扰</span>
+        <span class="card-desc" style="display:block">提醒市场
+          <select id="alert-market" style="display:inline-block;margin-left:6px">
+            <option value="a">A 股</option>
+            <option value="hk">港股</option>
+            <option value="both">A 股 + 港股</option>
+          </select>
+        </span>
+        <span class="card-desc">只在开盘时段提醒、收盘后 / 夜间 / 周末不打扰。A股 09:25–11:35 / 12:55–15:05；港股 09:00–12:00 / 13:00–16:00。</span>
       </div>
       <div class="size-row" style="margin-top:8px" data-page-node-id="97IY6AQteQupmBj5lH0svo">
         <label class="size-label" data-page-node-id="tas6TVm1ayEnuD2UROSUWi">冷却
