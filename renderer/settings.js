@@ -13,16 +13,20 @@ const PINYIN_API = 'https://searchapi.eastmoney.com/api/suggest/get';
 const PINYIN_TOKEN = 'D43BF722C8E33BDC906FB84D85E326E8';
 
 // ---------- 代码识别 ----------
-// 支持：A 股 / 基金(ETF/LOF) / 可转债
-// 规则（6 位数字）：
+// 支持：A 股 / 基金(ETF/LOF) / 可转债 / 港股
+// A股规则（6 位数字）：
 //   沪 sh：6xxxxx(A股)  9xxxxx  5xxxxx(基金)  11xxxx(可转债)
 //   深 sz：0xxxxx/2xxxxx/3xxxxx(A股)  15xxxx/16xxxx/18xxxx(基金)  12xxxx(可转债)
+// 港股规则：hk 前缀（hk981 / hk00981，位数自动补零到 5 位）或纯 5 位数字（00981 = 中芯国际）
 // 北交所(4/8 开头)暂不支持，可用 sh/sz 前缀手动加
 function normalizeSymbol(raw) {
   let s = String(raw || '').trim().toLowerCase();
   if (!s) return null;
-  // 去除空格
-  s = s.replace(/\s+/g, '');
+  // 允许 "600519 贵州茅台" / "600519贵州茅台" 这类带名称的写法：先摘出代码段
+  const seg = s.match(/(?:hk|sh|sz)?\d{5,6}|hk\d{1,4}/i);
+  s = seg ? seg[0] : s.replace(/\s+/g, '');
+  // hk 前缀 = 港股（位数不足 5 位自动补零：hk981 → hk00981）
+  if (/^hk\d{1,5}$/.test(s)) return 'hk' + s.slice(2).padStart(5, '0');
   // 已有 sh/sz 前缀（A股/基金/可转债都可用前缀直接传）
   if (/^(sh|sz)\d{6}$/.test(s)) return s;
   // 6 位纯数字
@@ -37,8 +41,8 @@ function normalizeSymbol(raw) {
         s.indexOf('16') === 0 || s.indexOf('18') === 0) return 'sz' + s; // 深可转债(12)/基金(15/16/18)
     return null;   // 其余(北交所 4/8 等)暂不支持
   }
-  // 5 位 = 沪市 A 股（老式）
-  if (/^\d{5}$/.test(s)) return 'sh' + ('0' + s);
+  // 5 位纯数字 = 港股（A 股代码一律 6 位，港股为 5 位）
+  if (/^\d{5}$/.test(s)) return 'hk' + s;
   return null;
 }
 
@@ -118,7 +122,7 @@ async function addOne(raw) {
       if (pick) return addByCandidate(pick);
       return false;
     }
-    alert(`未找到匹配「${raw}」的品种，请输入 6 位代码（股票/基金/可转债）或更精确的拼音缩写`);
+    alert(`未找到匹配「${raw}」的品种，请输入代码（A股/基金/可转债 6 位，港股 5 位或 hk 前缀）或更精确的拼音缩写`);
     return false;
   }
   if (stocks.find(s => s.symbol === sym)) {
@@ -153,9 +157,17 @@ async function searchStocks(query, count = 5) {
     const json = await res.json();
     const data = json?.QuotationCodeTable?.Data || [];
     return data
-      // A 股 + 基金 + 可转债（按市场号 沪1/深0 判 sh/sz，指数等排除）
+      // A 股 + 基金 + 可转债 + 港股（指数等排除）
       .filter((x) => {
         const mkt = Number(x.MktNum);
+        // 港股：东财市场号 116 / Classify=HK；只保留 5 位以内的正股，滤掉窝轮牛熊证(14567 这类 1xxxx)
+        if (mkt === 116 || x.Classify === 'HK') {
+          const c = String(x.Code || '');
+          if (!/^\d{5}$/.test(c)) return false;
+          if (Number(c) >= 10000) return false;
+          if (/购|沽|牛|熊|权证|窝轮/.test(x.Name || '')) return false;
+          return true;
+        }
         if ([0, 1, 105, 106].includes(mkt) && x.Code && String(x.Code).length === 6) return true;
         return x.Classify === 'AStock';
       })
@@ -165,16 +177,17 @@ async function searchStocks(query, count = 5) {
         name: x.Name,
         pinYin: x.PinYin,
       }))
-      .filter((x) => x.symbol && /^(sh|sz)\d{6}$/.test(x.symbol) && !/指数|指数$/.test(x.name || ''));
+      .filter((x) => x.symbol && /^((sh|sz)\d{6}|hk\d{5})$/.test(x.symbol) && !/指数|指数$/.test(x.name || ''));
   } catch (e) {
     console.error('[searchStocks]', e.message);
     return [];
   }
 }
 
-// 根据市场号构造 sh/sz 前缀
+// 根据市场号构造 sh/sz/hk 前缀
 function buildSymbol(code, mktNum) {
   const n = Number(mktNum);
+  if (n === 116) return 'hk' + String(code).padStart(5, '0');   // 港股
   if (n === 1 || n === 105) return 'sh' + code;   // 沪 / 沪B
   if (n === 0 || n === 106) return 'sz' + code;   // 深 / 深B
   return normalizeSymbol(code) || ('sh' + code);
@@ -267,10 +280,11 @@ function parseBulk(text) {
   const out = [];
   const seen = new Set(stocks.map(s => s.symbol));
   for (const t of toks) {
-    // 尝试提取 6 位数字代码（跳过可能的名称前缀，比如 "600519 贵州茅台"）
-    const m = t.match(/(\d{5,6})/);
+    // 提取代码：可带 sh/sz/hk 前缀（跳过可能的名称前缀，比如 "600519 贵州茅台"）
+    // 5~6 位 = A股/基金/可转债/港股；hk 前缀另允许 1~4 位（hk981）
+    const m = t.match(/(?:hk|sh|sz)?\d{5,6}/i) || t.match(/hk\d{1,4}/i);
     if (!m) continue;
-    const sym = normalizeSymbol(m[1]);
+    const sym = normalizeSymbol(m[0]);
     if (!sym) continue;
     if (seen.has(sym)) continue;
     seen.add(sym);
@@ -583,16 +597,26 @@ symbolInput.addEventListener('keydown', async (e) => {
 });
 document.getElementById('bulk-add').addEventListener('click', bulkAdd);
 document.getElementById('clear-btn').addEventListener('click', clearAll);
+// 关于：点仓库地址用系统浏览器打开（URL 固定在主进程，不走渲染层跳转）
+document.getElementById('about-repo')?.addEventListener('click', () => {
+  try { window.stockApi.openRepo?.(); } catch (_) {}
+});
 
 // ---------- 实时拼音搜索（debounce 250ms）----------
 let searchTimer = null;
 let searchSeq = 0;
+
+// 已经是完整可识别的代码（6 位 A 股 / sh80 / 5 位港股 / hk 前缀），不必再查候选
+function isCompleteSymbol(v) {
+  return /^\d{6}$/.test(v) || /^(sh|sz)\d{6}$/.test(v) || /^\d{5}$/.test(v) || /^hk\d{1,5}$/.test(v);
+}
+
 symbolInput.addEventListener('input', () => {
   const v = symbolInput.value.trim().toLowerCase();
   if (searchTimer) clearTimeout(searchTimer);
   if (!v || v.length < 2) { hideCandidates(); return; }
-  // 6 位纯代码直接跳过候选
-  if (/^\d{6}$/.test(v) || /^(sh|sz)\d{6}$/.test(v)) { hideCandidates(); return; }
+  // 完整代码直接跳过候选
+  if (isCompleteSymbol(v)) { hideCandidates(); return; }
   searchTimer = setTimeout(async () => {
     const seq = ++searchSeq;
     const list = await searchStocks(v, 8);
@@ -607,7 +631,7 @@ symbolInput.addEventListener('blur', () => {
 });
 symbolInput.addEventListener('focus', () => {
   const v = symbolInput.value.trim().toLowerCase();
-  if (v.length >= 2 && !/^\d{6}$/.test(v)) {
+  if (v.length >= 2 && !isCompleteSymbol(v)) {
     // 焦点时重新触发搜索（如果之前被 blur 隐藏了）
     clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
@@ -625,6 +649,20 @@ symbolInput.addEventListener('focus', () => {
   renderList();
   await loadWidgetCfg();   // 载入透明度/置顶/尺寸/切换方式当前值
   await loadAlertsCfg();   // 载入异动提醒配置
+
+  // 版本号 / 发布日期：与"帮助 → 关于"同源，取自打包后的 package.json（不会和安装包对不上）
+  try {
+    const info = await window.stockApi.getAppInfo?.();
+    if (info && info.version) {
+      const v = 'v' + info.version;
+      for (const id of ['app-ver', 'about-ver', 'about-version']) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = v;
+      }
+      const bd = document.getElementById('about-builddate');
+      if (bd) bd.textContent = info.buildDate || '—';
+    }
+  } catch (_) {}
 
   // 初次拉一次行情（拿到名称后顺带补全列表里的名称）
   window.stockApi.getQuotes?.().then((d) => {

@@ -11,9 +11,9 @@
       <span class="logo" data-page-node-id="7ZOlTBYM0Fk5BP1B7nwIYQ">📈</span>
       <div class="head-text" data-page-node-id="N9Sam92E5BN2Ppk4qCrpn6">
         <h1 data-page-node-id="Ui95GPQOlEMDTA1OLNyyxR">Marketmonitor 设置</h1>
-        <p class="sub">添加或批量粘贴 股票 / 基金 / 可转债 代码，名称自动补全，保存后小组件立即生效</p>
+        <p class="sub">添加或批量粘贴 股票 / 基金 / 可转债 / 港股 代码，名称自动补全，保存后小组件立即生效</p>
       </div>
-      <span class="ver" data-page-node-id="eoNFQWZuFvU6k6DCqusIQR">v1.3</span>
+      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）" data-page-node-id="eoNFQWZuFvU6k6DCqusIQR">v1.4.2</span>
     </header>
 
     <section class="card" data-page-node-id="eTqzjpdmK5qPVil5MmETzP">
@@ -26,17 +26,17 @@
     <section class="card" data-page-node-id="XWFOIl0Evgn1xtjaC3bHiP">
       <div class="card-title" data-page-node-id="UzlHcKREy9alCqqEbiAndE"><span class="bar" data-page-node-id="3ZFG4XIjnBLDKbAC3Gtm2W"></span>快速添加</div>
       <div class="row-ctrl" data-page-node-id="qwAfEHMJRcNpiqU890STa8">
-        <input id="symbol-input" placeholder="代码 600519 或 拼音缩写 gzmt/wly，回车添加，下拉选择候选" autocomplete="off" data-page-node-id="jlPb0CLZAJFuYRP0IZDhkW" />
+        <input id="symbol-input" placeholder="代码 600519 / 00981 / hk00981，或拼音缩写 gzmt/zxgj，回车添加" autocomplete="off" data-page-node-id="jlPb0CLZAJFuYRP0IZDhkW" />
         <button id="add-btn" class="btn primary" data-page-node-id="hUIGTkyXtByzypVkNCgGub">添加</button>
       </div>
       <div id="candidate-list" class="candidate-list" style="display:none" data-page-node-id="ogpyCUgIVGajIKWmRg8KCQ"></div>
-      <div class="card-desc" style="margin-top:6px" data-page-node-id="M44fPi7jV27fs2B6ibyyYy">支持：6 位代码（sh/sz 自动补齐）· 拼音首字母（gzmt=贵州茅台，wly=五粮液）</div>
+      <div class="card-desc" style="margin-top:6px" data-page-node-id="M44fPi7jV27fs2B6ibyyYy">支持：A股 / 基金 / 可转债 6 位代码（sh/sz 自动补齐）· 港股 5 位代码 <b>00981</b> 或 <b>hk00981</b> · 拼音首字母（gzmt=贵州茅台，zxgj=中芯国际，可带出港股候选）</div>
     </section>
 
     <section class="card" data-page-node-id="mO34aZCtAJnvimgwkvll6A">
       <div class="card-title" data-page-node-id="hvaF3SN3vgnp2bSZOjxIXq"><span class="bar" data-page-node-id="wrSg8ezh1RKYhNDZwIHEsl"></span>批量粘贴</div>
       <div class="card-desc" data-page-node-id="behQGDxOc61VLVZvTrukEb">支持一次粘贴多行 / 逗号 / 空格分隔，自动识别名称（若接口可取到则自动补齐）</div>
-      <textarea id="bulk-input" placeholder="600519 贵州茅台&#10;000858&#10;300750 宁德时代&#10;510300&#10;159915&#10;128050&#10;sz000001,sh601318"></textarea>
+      <textarea id="bulk-input" placeholder="600519 贵州茅台&#10;000858&#10;300750 宁德时代&#10;00981 中芯国际&#10;hk00700 腾讯控股&#10;510300&#10;159915&#10;128050&#10;sz000001,sh601318"></textarea>
       <div class="row-ctrl" data-page-node-id="5zb07mjo915bOd5KJGhV3z">
         <button id="bulk-add" class="btn primary" data-page-node-id="QhrscouOlkDsWrHmL9AtYA">批量添加</button>
         <button id="clear-btn" class="btn ghost" data-page-node-id="gYdxjjWjnXVhgYAjrC3FI9">清空列表</button>
@@ -156,6 +156,19 @@
       <div class="card-desc" style="margin-top:6px" data-page-node-id="Fc2q8Dv0BZxznEGxZ1H81P">
         涨幅、跌幅阈值<b data-page-node-id="EMeA2XIIkfeahhxFZpAsvX">可分别设置</b>（例如涨 3.9% / 跌 5%）。取消勾选即关闭该方向提醒。<br  data-page-node-id="EMaf1W67GJGmzAm7bT0dCQ"/>
         触发后：系统通知 + 提示音 + 小组件对应行闪烁。冷却期内同一只不重复打扰。
+      </div>
+    </section>
+
+    <section class="card" id="about-card">
+      <div class="card-title"><span class="bar"></span>关于 <span class="badge" id="about-ver">v1.4.2</span></div>
+      <div class="size-row">
+        <span class="card-desc" style="flex:0 0 auto;min-width:170px">版本号　<b id="about-version">v1.4.2</b></span>
+        <span class="card-desc">发布日期　<b id="about-builddate">—</b></span>
+      </div>
+      <div class="card-desc" style="margin-top:6px">
+        A股 / 基金 / 可转债 / 港股 桌面悬浮行情小组件。行情数据：腾讯财经；代码搜索：东方财富。<br/>
+        帮助菜单 →「关于 Marketmonitor」可随时查看版本号与发布日期。仓库：
+        <span id="about-repo" style="color:#2f6feb;cursor:pointer;text-decoration:underline">github.com/yohoky/marketmonitor</span>
       </div>
     </section>
 

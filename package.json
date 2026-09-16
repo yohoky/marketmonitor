@@ -1,8 +1,9 @@
 {
   "name": "marketmonitor",
   "productName": "Marketmonitor",
-  "version": "1.4.1",
-  "description": "Windows 11 悬浮行情小组件（A股/基金/可转债）：多股同屏/滚动跳动切换 + 名称自动补全 + 异动提醒 + 透明度/位置/尺寸自定义",
+  "version": "1.4.2",
+  "buildDate": "2026-09-17",
+  "description": "Windows 悬浮行情小组件（A股/基金/可转债/港股）：多股同屏/滚动跳动切换 + 名称自动补全 + 异动提醒 + 透明度/位置/尺寸自定义",
   "main": "main.js",
   "author": "yohoky",
   "license": "MIT",

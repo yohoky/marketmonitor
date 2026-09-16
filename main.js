@@ -10,7 +10,7 @@ if (!electron || !electron.app) {
   process.exit(1);
 }
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, shell, Notification } = electron;
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, shell, Notification, dialog } = electron;
 const path = require('path');
 const fs = require('fs');
 const iconv = require('iconv-lite');
@@ -52,8 +52,11 @@ process.on('unhandledRejection', (e) => logErr('unhandledRejection', e));
 const INI_TEMPLATE = `; ==================================================
 ;  Marketmonitor 配置
 ;
-;  [stocks]  一行一个代码，支持 6 位数字 或 sh/sz 前缀
-;            直接粘贴即可（自动识别沪深）
+;  [stocks]  一行一个代码，支持：
+;              6 位数字          → A股/基金/可转债（自动识别沪深）
+;              5 位数字          → 港股（如 00981 = 中芯国际）
+;              sh/sz 前缀        → A股
+;              hk 前缀           → 港股（如 hk981 / hk00981，位数自动补零）
 ;
 ;  [widget]  外观/尺寸/刷新，格式 key=value
 ;            displayMode = scroll(滚动) / jump(跳动)
@@ -64,7 +67,8 @@ const INI_TEMPLATE = `; ==================================================
 ;            sound       true 播放提示音
 ;            cooldownMs  同一只股票的提醒冷却时间(毫秒)，防刷屏
 ;            tradingHours 仅开盘时段提醒 true/false（默认 true）
-;                         时段=A股北京时间 09:25–11:35 / 12:55–15:05，周末除外
+;            market       a(A股) / hk(港股) / both(两者)，决定按哪个市场的开盘时段静默
+;                         A股 09:25–11:35 / 12:55–15:05，港股 09:00–12:00 / 13:00–16:00，周末除外
 ; ==================================================
 
 [stocks]
@@ -163,12 +167,15 @@ function loadConfig() {
     try {
       const sections = parseIni(fs.readFileSync(CONFIG_PATH, 'utf8'));
       const stocks = (sections['stocks'] || []).map(code => {
-        // 代码行：支持 "600519" / "sh600519" / "600519 贵州茅台"
+        // 代码行：支持 "600519" / "sh600519" / "hk00981" / "600519 贵州茅台"
         const parts = code.split(/\s+/);
         let sym = parts[0].trim().toLowerCase();
         const name = parts.slice(1).join(' ');
+        // hk 前缀 = 港股：位数不足 5 位自动补零（hk981 → hk00981）
+        if (/^hk\d{1,5}$/.test(sym)) {
+          sym = 'hk' + sym.slice(2).padStart(5, '0');
         // 纯 6 位数字 → 自动加 sh/sz 前缀（A股/基金/可转债）
-        if (/^\d{6}$/.test(sym)) {
+        } else if (/^\d{6}$/.test(sym)) {
           const h = sym[0];
           if (h === '6' || h === '9' || h === '5') sym = 'sh' + sym;                    // 沪 A股/基金
           else if (sym.indexOf('11') === 0) sym = 'sh' + sym;                            // 沪可转债
@@ -176,7 +183,8 @@ function loadConfig() {
           else if (sym.indexOf('12') === 0 || sym.indexOf('15') === 0 ||
                    sym.indexOf('16') === 0 || sym.indexOf('18') === 0) sym = 'sz' + sym; // 深可转债/基金
         } else if (/^\d{5}$/.test(sym)) {
-          sym = 'sh' + ('0' + sym);
+          // 纯 5 位 = 港股（A 股代码一律 6 位；港股是 5 位，如 00981 中芯国际 / 00700 腾讯控股）
+          sym = 'hk' + sym;
         }
         return { symbol: sym, name: name || sym };
       });
@@ -245,9 +253,9 @@ function saveConfig() {
     lines.push('; ==================================================');
     lines.push(';  Marketmonitor 配置  (此文件由程序自动生成/更新)');
     lines.push(';');
-    lines.push(';  [stocks]  一行一个代码，支持 6 位数字 或 sh/sz 前缀');
+    lines.push(';  [stocks]  一行一个代码，支持：6 位数字(A股/基金/可转债) / sh|sz 前缀 / 5 位数字(港股) / hk 前缀(如 hk00981)');
     lines.push(';  [widget]  外观/尺寸/刷新，displayMode = scroll | jump');
-    lines.push(';  [alerts]  异动提醒：threshold 阈值% / direction up|down|both');
+    lines.push(';  [alerts]  异动提醒：threshold 阈值% / direction up|down|both / market a|hk|both');
     lines.push('; ==================================================');
     lines.push('');
     lines.push('[stocks]');
@@ -718,17 +726,26 @@ async function fetchQuotes(symbols) {
     // 腾讯 API 返回 GBK 编码，用 iconv-lite 正确解码
     const buf = Buffer.from(await res.arrayBuffer());
     const text = iconv.decode(buf, 'gbk');
-    return parseQuotes(text);
+    return parseQuotes(text, symbols);
   } catch (e) {
     console.error('[fetchQuotes] error:', e.message);
     return lastQuotes || [];
   }
 }
 
+// 腾讯返回的第 0 段是"市场号"而不是代码：1=沪 51=深 100=港
+const MARKET_PREFIX = { '1': 'sh', '51': 'sz', '100': 'hk' };
+
 // 解析腾讯财经返回格式
-// v_pv_2_sz000858="51~五粮液~000858~29.30~29.25~29.35~...~..."
-function parseQuotes(text) {
+// v_sh600519="1~贵州茅台~600519~1258.00~..."   /  v_hk00981="100~中芯国际~00981~..."
+// 注意：A 股与港股的 31=涨跌 / 32=涨跌幅(%) / 33=最高 / 34=最低 位置一致，可共用一套解析。
+function parseQuotes(text, symbols) {
   const out = [];
+  // 用"请求时的代码"反查 symbol，保证与自选股列表一致（否则 symbol 会变成市场号 1/51/100）
+  const byCode = new Map();
+  for (const s of (symbols || [])) {
+    byCode.set(String(s).replace(/^[a-z]+/i, ''), String(s));
+  }
   const regex = /=(?:"([^"]*)")/g;
   let m;
   while ((m = regex.exec(text)) !== null) {
@@ -739,10 +756,12 @@ function parseQuotes(text) {
     // ...
     // 31=涨跌  32=涨跌幅(%)  33=最高  34=最低  35=最新价
     if (parts.length < 35) continue;
+    const code = parts[2] || '';
+    const mkt = MARKET_PREFIX[String(parts[0])];
     out.push({
-      symbol: parts[0] || '',
+      symbol: byCode.get(code) || (mkt ? mkt + code : code),
       name: parts[1] || '',
-      code: parts[2] || '',
+      code,
       price: parseFloat(parts[3]) || 0,
       prevClose: parseFloat(parts[4]) || 0,
       open: parseFloat(parts[5]) || 0,
@@ -999,6 +1018,7 @@ function createTray() {
     { type: 'separator' },
     { label: '立即刷新', click: () => { try { tick(); } catch (e) { logErr('tick', e); } } },
     { type: 'separator' },
+    { label: '关于 Marketmonitor', click: () => showAbout() },
     { label: '退出', click: () => app.quit() },
   ]);
   void shell;
@@ -1008,6 +1028,84 @@ function createTray() {
   // 让进程继续存活；否则 Electron 会弹阻断式"A JavaScript error occurred"，
   // 一旦弹出就完全无法再操作托盘。
   tray.on('click', () => { try { toggleWidget(); } catch (e) { logErr('tray-click', e); } });
+}
+
+// ---------- 关于 / 版本信息 ----------
+// 版本号取自打包后的 package.json（electron-builder 按 package.json 的 version 生成安装包文件名，
+// 所以 app.getVersion() 与安装包版本天然一致，不会出现"界面写死 v1.3"那种对不上的情况）。
+// 发布日期由 CI 在构建时写入 package.json 的 buildDate 字段。
+const REPO_URL = 'https://github.com/yohoky/marketmonitor';
+
+function readBuildDate() {
+  const inline = (() => { try { return require('./package.json').buildDate; } catch (_) { return null; } })();
+  if (inline) return String(inline);
+  // 兜底：本地未注入时读 package.json 文件，再兜底用安装目录 mtime
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    if (pkg && pkg.buildDate) return String(pkg.buildDate);
+  } catch (_) {}
+  try {
+    const st = fs.statSync(path.join(__dirname, 'package.json'));
+    const d = new Date(st.mtimeMs);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  } catch (_) { return ''; }
+}
+
+function getAppInfo() {
+  let version = '';
+  try { version = app.getVersion(); } catch (_) {}
+  return {
+    name: 'Marketmonitor',
+    version: version || '0.0.0',
+    buildDate: readBuildDate(),
+    electron: (process.versions && process.versions.electron) || '',
+    repo: REPO_URL,
+  };
+}
+
+// 关于弹窗：版本号 + 发布日期（托盘 / 帮助菜单共用）
+function showAbout() {
+  const info = getAppInfo();
+  try {
+    dialog.showMessageBox({
+      type: 'info',
+      title: '关于 Marketmonitor',
+      message: `Marketmonitor  v${info.version}`,
+      detail: [
+        `版本号：v${info.version}`,
+        `发布日期：${info.buildDate || '—'}`,
+        '',
+        'A股 / 基金 / 可转债 / 港股 桌面悬浮行情小组件',
+        '行情数据：腾讯财经    代码搜索：东方财富',
+        `Electron ${info.electron}`,
+        '',
+        REPO_URL,
+      ].join('\n'),
+      buttons: ['确定'],
+      noLink: true,
+    });
+  } catch (e) { logErr('showAbout', e); }
+}
+
+ipcMain.handle('get-app-info', () => getAppInfo());
+// 打开项目主页（URL 固定在主进程，渲染层不能传入任意地址）
+ipcMain.handle('open-repo', () => { try { shell.openExternal(REPO_URL); return true; } catch (_) { return false; } });
+
+// 应用菜单：设置窗口顶部的"编辑 / 视图 / 帮助"，帮助 → 关于（显示版本号与发布日期）
+function buildAppMenu() {
+  const template = [
+    { role: 'editMenu', label: '编辑' },
+    { role: 'viewMenu', label: '视图' },
+    {
+      label: '帮助',
+      submenu: [
+        { label: '关于 Marketmonitor', click: () => showAbout() },
+        { type: 'separator' },
+        { label: '项目主页（GitHub）', click: () => { try { shell.openExternal(REPO_URL); } catch (_) {} } },
+      ],
+    },
+  ];
+  try { Menu.setApplicationMenu(Menu.buildFromTemplate(template)); } catch (e) { logErr('buildAppMenu', e); }
 }
 
 // ---------- 生命周期 ----------
@@ -1089,6 +1187,7 @@ if (triggered('test-alert') || process.env.MM_TEST_ALERT === '1') {
   if (app.isReady()) done(); else app.once('ready', done);
 } else {
   app.whenReady().then(() => {
+    buildAppMenu();
     createWidgetWindow();
     createTray();
     tick();

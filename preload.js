@@ -31,4 +31,7 @@ contextBridge.exposeInMainWorld('stockApi', {
   getAlertsConfig: () => ipcRenderer.invoke('get-alerts-config'),
   saveAlertsConfig: (cfg) => ipcRenderer.invoke('save-alerts-config', cfg),
   testAlert: () => ipcRenderer.invoke('test-alert'),
+  // 版本信息（关于页显示版本号 + 发布日期）
+  getAppInfo: () => ipcRenderer.invoke('get-app-info'),
+  openRepo: () => ipcRenderer.invoke('open-repo'),
 });
