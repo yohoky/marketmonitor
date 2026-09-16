@@ -37,10 +37,12 @@ jobs:
 
       # 构建日期注入 package.json：安装包内的"关于"页会显示这个日期，
       # 由 CI 自动写入，避免手改漏改（与版本号同源，都来自打包的 package.json）。
+      # 注意：按北京时间(UTC+8)取日期——CI 跑在 UTC，直接用 UTC 日期会比国内看到的日期早一天。
       - name: Inject build date
         shell: pwsh
         run: |
-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.buildDate=new Date().toISOString().slice(0,10);fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');console.log('version='+p.version+' buildDate='+p.buildDate)"
+          $d = [System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'China Standard Time').ToString('yyyy-MM-dd')
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.buildDate=process.argv[1];fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');console.log('version='+p.version+' buildDate='+p.buildDate)" $d
 
       - name: Build NSIS installer
         run: npx electron-builder --win --x64 --publish never
