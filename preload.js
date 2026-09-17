@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('stockApi', {
   getWidgetConfig: () => ipcRenderer.invoke('get-widget-config'),
   saveWidgetConfig: (cfg) => ipcRenderer.invoke('save-widget-config', cfg),
   onOpacity: (cb) => ipcRenderer.on('opacity-change', (_e, op) => cb(op)),
+  onTextOpacity: (cb) => ipcRenderer.on('text-opacity-change', (_e, v) => cb(v)),
+  onMono: (cb) => ipcRenderer.on('mono-change', (_e, on) => cb(on)),
   onDisplayMode: (cb) => ipcRenderer.on('display-mode', (_e, m) => cb(m)),
   onRotationMs: (cb) => ipcRenderer.on('rotation-ms', (_e, ms) => cb(ms)),
   // 屏幕位置（九宫格锚点归位）

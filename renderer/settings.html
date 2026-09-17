@@ -55,11 +55,24 @@
         <span class="card-desc" data-page-node-id="UWjTAaDKBAwEhgaBloiSeK">即时生效（像素）</span>
       </div>
       <div class="opacity-row" data-page-node-id="0bxnwpOIcyfgnwcWTkc3tG">
-        <label data-page-node-id="e6FukFis47inRXSYPXMRmQ">透明度
+        <label data-page-node-id="e6FukFis47inRXSYPXMRmQ">背景透明度
           <input type="range" id="opacity-slider" min="0.05" max="1.0" step="0.05" data-page-node-id="oJQxy8TnerRgGUsDUZnRJF" />
           <span id="opacity-val" class="opacity-val" data-page-node-id="3yoTqC32jvlb8B9kx1X39d">1.0</span>
         </label>
-        <span class="card-desc" data-page-node-id="E5MgpHe3Tk83O4GWqa0AeV">摸鱼模式：可低至 0.05，小组件几乎透明</span>
+        <span class="card-desc" data-page-node-id="E5MgpHe3Tk83O4GWqa0AeV">只淡卡片底色，文字不受影响；可低至 0.05</span>
+      </div>
+      <div class="opacity-row" style="margin-top:8px">
+        <label data-page-node-id="e6FukFis47inRXSYPXMRmQ">文字透明度
+          <input type="range" id="text-opacity-slider" min="0.05" max="1.0" step="0.05" />
+          <span id="text-opacity-val" class="opacity-val">1.0</span>
+        </label>
+        <span class="card-desc">只淡文字和数字，背景与卡片轮廓保持原样；调低后数字更"隐形"</span>
+      </div>
+      <div class="row-ctrl" style="margin-top:8px">
+        <label class="chk-label">
+          <input type="checkbox" id="mono-chk" /> 黑白模式
+        </label>
+        <span class="card-desc">涨跌不再用红绿，改成深浅灰，摸鱼时更不显眼</span>
       </div>
       <div class="size-row" style="margin-top:8px" data-page-node-id="lPHgo265ptPxwzeQshVyoc">
         <label class="size-label" data-page-node-id="QY303FhNy5ekErHEsdTGfG">切换方式

@@ -364,6 +364,9 @@ const topmostChk = document.getElementById('topmost-chk');
 const widthInput = document.getElementById('width-input');
 const heightInput = document.getElementById('height-input');
 const displayModeSel = document.getElementById('display-mode');
+const textOpacitySlider = document.getElementById('text-opacity-slider');
+const textOpacityVal = document.getElementById('text-opacity-val');
+const monoChk = document.getElementById('mono-chk');
 
 let widgetCfg = null;   // 缓存 widget 配置 {opacity, topMost, width, height}
 
@@ -373,12 +376,18 @@ async function loadWidgetCfg() {
     const cfg = await window.stockApi.getWidgetConfig();
     widgetCfg = cfg;
   } catch (_) {
-    widgetCfg = { opacity: 1.0, topMost: true, width: 220, height: 84 };
+    widgetCfg = { opacity: 1.0, textOpacity: 1.0, mono: false, topMost: true, width: 220, height: 84 };
   }
   if (opacitySlider) {
     opacitySlider.value = widgetCfg.opacity || 1.0;
     opacityVal.textContent = (widgetCfg.opacity || 1.0).toFixed(2);
   }
+  if (textOpacitySlider) {
+    const t = widgetCfg.textOpacity ?? 1.0;
+    textOpacitySlider.value = t;
+    textOpacityVal.textContent = Number(t).toFixed(2);
+  }
+  if (monoChk) monoChk.checked = !!widgetCfg.mono;
   if (topmostChk) {
     topmostChk.checked = widgetCfg.topMost !== false;
   }
@@ -452,6 +461,20 @@ opacitySlider?.addEventListener('input', () => {
 opacitySlider?.addEventListener('change', async () => {
   const v = parseFloat(opacitySlider.value);
   widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), opacity: v });
+});
+
+// 文字透明度：只淡文字/数字，与背景透明度互不影响
+textOpacitySlider?.addEventListener('input', () => {
+  textOpacityVal.textContent = parseFloat(textOpacitySlider.value).toFixed(2);
+});
+textOpacitySlider?.addEventListener('change', async () => {
+  const v = parseFloat(textOpacitySlider.value);
+  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), textOpacity: v });
+});
+
+// 黑白模式：涨跌改深浅灰
+monoChk?.addEventListener('change', async () => {
+  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), mono: monoChk.checked });
 });
 
 topmostChk?.addEventListener('change', async () => {

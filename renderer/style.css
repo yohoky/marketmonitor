@@ -5,8 +5,18 @@
   --flat: #94a3b8;
   --text: #0f172a;
   --muted: #64748b;
-  --card-a: 1;        /* 卡片背景不透明度：只影响背景，文字恒清晰 */
+  --card-a: 1;        /* 卡片背景不透明度：只影响背景，文字不受影响 */
+  --text-a: 1;        /* 文字不透明度：只影响文字/数字，背景不受影响 */
   --border: rgba(0,0,0,0.06);
+}
+
+/* ---------- 黑白模式（摸鱼更隐蔽：涨跌不再红绿，改深浅灰）---------- */
+body.mono {
+  --up: #334155;      /* 涨：深灰 */
+  --down: #94a3b8;    /* 跌：浅灰 */
+  --flat: #94a3b8;
+  --muted: #94a3b8;
+  --text: #334155;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -97,7 +107,8 @@ html, body {
 .row .name,
 .row .price,
 .row .pct {
-  text-shadow: 0 0 3px rgba(255,255,255,calc(0.85 * var(--card-a, 1)));
+  text-shadow: 0 0 3px rgba(255,255,255,calc(0.85 * var(--card-a, 1) * var(--text-a, 1)));
+  opacity: var(--text-a, 1);
 }
 
 .row .name {
@@ -144,6 +155,13 @@ html, body {
   0%, 100% { background: rgba(34,197,94,0.00); }
   50%      { background: rgba(34,197,94,0.22); }
 }
+/* 黑白模式下闪烁也去掉红/绿，改成中性灰，不引人注意 */
+body.mono .row.flash,
+body.mono .row.flash.down-flash { animation-name: flashBgMono; }
+@keyframes flashBgMono {
+  0%, 100% { background: rgba(100,116,139,0.00); }
+  50%      { background: rgba(100,116,139,0.16); }
+}
 
 /* ---------- 状态栏 ---------- */
 .status-bar {
@@ -153,10 +171,10 @@ html, body {
   font-size: 10px;
   color: var(--muted);
   padding: 0 4px;
-  opacity: 0.85;
+  opacity: calc(0.85 * var(--text-a, 1));
   flex: 0 0 auto;
-  /* 状态栏同样跟随透明度收敛（与正文一致） */
-  text-shadow: 0 0 3px rgba(255,255,255,calc(0.85 * var(--card-a, 1)));
+  /* 状态栏同样跟随背景/文字透明度收敛（与正文一致） */
+  text-shadow: 0 0 3px rgba(255,255,255,calc(0.85 * var(--card-a, 1) * var(--text-a, 1)));
 }
 
 .dot {

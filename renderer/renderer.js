@@ -22,16 +22,29 @@ const tradingEl = document.getElementById('trading');
 const dot = document.querySelector('.dot');
 const alertPop = document.getElementById('alert-pop');
 
-// ---------- 透明度（只作用于背景；文字/数字恒定清晰）----------
+// ---------- 透明度（背景 / 文字 分别独立控制）----------
 function applyOp(op) {
   const v = Math.max(0.05, Math.min(1.0, parseFloat(op) || 1));
   // 背景 alpha 跟随设置；最低 0.08 保证卡片轮廓仍可见
   document.documentElement.style.setProperty('--card-a', String(Math.max(0.08, v)));
 }
+// 文字透明度：只作用于文字/数字（含状态栏），背景与卡片轮廓不受影响
+function applyTextOp(v) {
+  const t = Math.max(0.05, Math.min(1.0, parseFloat(v) || 1));
+  document.documentElement.style.setProperty('--text-a', String(t));
+}
+// 黑白模式：涨跌不用红绿，改深浅灰，摸鱼更不显眼
+function applyMono(on) {
+  document.body.classList.toggle('mono', !!on);
+}
 window.stockApi?.onOpacity?.(applyOp);
+window.stockApi?.onTextOpacity?.(applyTextOp);
+window.stockApi?.onMono?.(applyMono);
 window.stockApi?.getWidgetConfig?.().then(c => {
   if (!c) return;
   if (c.opacity != null) applyOp(c.opacity);
+  if (c.textOpacity != null) applyTextOp(c.textOpacity);
+  if (c.mono != null) applyMono(c.mono);
   if (c.displayMode) setDisplayMode(c.displayMode);
   if (c.rotationMs) setRotationMs(c.rotationMs);
 }).catch(() => {});

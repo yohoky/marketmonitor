@@ -59,7 +59,10 @@ const INI_TEMPLATE = `; ==================================================
 ;              hk 前缀           → 港股（如 hk981 / hk00981，位数自动补零）
 ;
 ;  [widget]  外观/尺寸/刷新，格式 key=value
-;            displayMode = scroll(滚动) / jump(跳动)
+;            displayMode  = scroll(滚动) / jump(跳动)
+;            opacity      = 背景不透明度 0.05~1.0（只淡卡片底色，文字不受影响）
+;            textOpacity  = 文字不透明度 0.05~1.0（只淡文字/数字，背景不受影响）
+;            mono         = true 黑白模式（涨跌不用红绿，改深浅灰，摸鱼更隐蔽）
 ;
 ;  [alerts]  异动提醒
 ;            threshold   触发阈值(%) 绝对值
@@ -91,6 +94,8 @@ topMost=true
 fetchIntervalMs=30000
 rotationMs=3000
 opacity=1.0
+textOpacity=1.0
+mono=false
 displayMode=scroll
 position-x=0
 position-y=0
@@ -211,6 +216,8 @@ function loadConfig() {
           fetchIntervalMs: parseInt(cfg['fetchIntervalMs']) || 30000,
           rotationMs: parseInt(cfg['rotationMs']) || 3000,
           opacity: parseFloat(cfg['opacity']) || 1.0,
+          textOpacity: Math.max(0.05, Math.min(1.0, parseFloat(cfg['textOpacity']))) || 1.0,
+          mono: cfg['mono'] === 'true',
           displayMode: (cfg['displayMode'] === 'jump') ? 'jump' : 'scroll',
           position: {
             x: parseInt(cfg['position-x']) || 0,
@@ -240,6 +247,7 @@ function loadConfig() {
     widget: {
       width: 220, height: 84, topMost: true,
       fetchIntervalMs: 30000, rotationMs: 3000, opacity: 1.0,
+      textOpacity: 1.0, mono: false,
       displayMode: 'scroll',
       position: { x: 0, y: 0 },
     },
@@ -270,6 +278,8 @@ function saveConfig() {
     lines.push('fetchIntervalMs=' + store.widget.fetchIntervalMs);
     lines.push('rotationMs=' + store.widget.rotationMs);
     lines.push('opacity=' + store.widget.opacity);
+    lines.push('textOpacity=' + (store.widget.textOpacity ?? 1.0));
+    lines.push('mono=' + (store.widget.mono ? 'true' : 'false'));
     lines.push('displayMode=' + (store.widget.displayMode || 'scroll'));
     lines.push('position-x=' + (store.widget.position?.x || 0));
     lines.push('position-y=' + (store.widget.position?.y || 0));
@@ -573,6 +583,11 @@ function createWidgetWindow() {
     // 这里仅兜底调用一次，保证透明窗口也能立刻生效
     const op = Math.max(0.05, Math.min(1.0, parseFloat(store.widget.opacity) || 1.0));
     try { widgetWindow.webContents.send('opacity-change', op); } catch (_) {}
+    try {
+      const tp = Math.max(0.05, Math.min(1.0, parseFloat(store.widget.textOpacity) || 1.0));
+      widgetWindow.webContents.send('text-opacity-change', tp);
+    } catch (_) {}
+    try { widgetWindow.webContents.send('mono-change', !!store.widget.mono); } catch (_) {}
     try { widgetWindow.webContents.send('display-mode', store.widget.displayMode || 'scroll'); } catch (_) {}
     try { widgetWindow.webContents.send('rotation-ms', store.widget.rotationMs || 3000); } catch (_) {}
 
@@ -809,6 +824,8 @@ ipcMain.handle('save-stocks', (_e, stocks) => {
 ipcMain.handle('get-quote-cache', () => lastQuotes);
 ipcMain.handle('get-widget-config', () => ({
   opacity: store.widget.opacity ?? 1.0,
+  textOpacity: store.widget.textOpacity ?? 1.0,
+  mono: !!store.widget.mono,
   topMost: store.widget.topMost,
   width: store.widget.width,
   height: store.widget.height,
@@ -845,6 +862,22 @@ ipcMain.handle('save-widget-config', (_e, cfg) => {
       try { widgetWindow.webContents.send('opacity-change', op); } catch (_) {}
     }
   }
+  // 文字透明度（下限 0.05）：只淡文字/数字，背景不动
+  if (cfg.textOpacity != null) {
+    const tp = Math.max(0.05, Math.min(1.0, parseFloat(cfg.textOpacity) || 1.0));
+    store.widget.textOpacity = tp;
+    if (widgetWindow && !widgetWindow.isDestroyed()) {
+      try { widgetWindow.webContents.send('text-opacity-change', tp); } catch (_) {}
+    }
+  }
+  // 黑白模式：涨跌改深浅灰（摸鱼更隐蔽）
+  if (cfg.mono != null) {
+    const mono = !!cfg.mono;
+    store.widget.mono = mono;
+    if (widgetWindow && !widgetWindow.isDestroyed()) {
+      try { widgetWindow.webContents.send('mono-change', mono); } catch (_) {}
+    }
+  }
   // 置顶
   if (cfg.topMost != null) {
     const tm = !!cfg.topMost;
@@ -876,6 +909,8 @@ ipcMain.handle('save-widget-config', (_e, cfg) => {
   saveConfig();
   return {
     opacity: store.widget.opacity,
+    textOpacity: store.widget.textOpacity ?? 1.0,
+    mono: !!store.widget.mono,
     topMost: store.widget.topMost,
     width: store.widget.width,
     height: store.widget.height,
