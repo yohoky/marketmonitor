@@ -556,11 +556,44 @@ textarea {
    ============================================================ */
 
 /* 板块指数：勾选网格（按「宽基指数 / 板块指数」分组展示） */
+/* 指数库搜索框：指数清单有 70+ 项，输入关键字即过滤 */
+.idx-search {
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfcfe;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.idx-search::placeholder { color: var(--muted); }
+.idx-search:focus { border-color: var(--primary-2); box-shadow: var(--ring); background: #fff; }
+
 .idx-grid {
   display: flex;
   flex-direction: column;
   gap: 14px;
   margin-top: 10px;
+}
+.idx-group-num {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--chip-text);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.idx-empty {
+  padding: 18px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
 }
 .idx-group-title {
   font-size: 12px;

@@ -13,7 +13,7 @@
         <h1>Marketmonitor 设置</h1>
         <p class="sub">每个「监控列表」是一个独立的悬浮小窗口，可分别监控自选股 / 板块指数 / 基金等，互不干扰</p>
       </div>
-      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）">v1.5.1</span>
+      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）">v1.5.2</span>
     </header>
 
     <!-- ============ 列表切换 ============ -->
@@ -148,8 +148,9 @@
     </section>
 
     <section class="card" id="index-card">
-      <div class="card-title"><span class="bar"></span>板块指数 <span class="badge" id="index-count">0</span></div>
-      <div class="card-desc">宽基 / 板块指数勾选即加入<b>当前列表</b>；同样参与滚动 / 跳动与异动提醒（含邮件推送）。</div>
+      <div class="card-title"><span class="bar"></span>指数库 <span class="badge" id="index-count">0</span></div>
+      <div class="card-desc">宽基 / 行业板块 / 主题概念指数，勾选即加入<b>当前列表</b>；同样参与滚动 / 跳动与异动提醒（含邮件推送）。</div>
+      <input type="text" id="idx-search" class="idx-search" placeholder="搜索指数：名称或代码，如 科创 / 白酒 / sz399997" autocomplete="off" />
       <div class="idx-grid" id="idx-grid"></div>
     </section>
 
@@ -305,9 +306,9 @@
     </section>
 
     <section class="card" id="about-card">
-      <div class="card-title"><span class="bar"></span>关于与更新 <span class="badge" id="about-ver">v1.5.1</span></div>
+      <div class="card-title"><span class="bar"></span>关于与更新 <span class="badge" id="about-ver">v1.5.2</span></div>
       <div class="size-row">
-        <span class="card-desc" style="flex:0 0 auto;min-width:170px">当前版本　<b id="about-version">v1.5.1</b></span>
+        <span class="card-desc" style="flex:0 0 auto;min-width:170px">当前版本　<b id="about-version">v1.5.2</b></span>
         <span class="card-desc">发布日期　<b id="about-builddate">—</b></span>
       </div>
       <div class="size-row" style="margin-top:8px">

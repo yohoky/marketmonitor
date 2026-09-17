@@ -317,28 +317,46 @@ function normalizeEmail(raw) {
   };
 }
 
-// ---------- 指数预设（宽基 / 板块）----------
+// ---------- 指数预设（宽基 / 板块 / 主题）----------
 // 指数代码必须带前缀：纯 000001 会被识别成平安银行(sz000001)，所以一律写全。
 // 腾讯财经对指数的字段布局与个股完全一致（31=涨跌 32=涨跌幅），可共用解析。
-// group：'broad' 宽基指数 / 'sector' 板块（行业·主题）指数，设置页按组展示。
+// group：'broad' 宽基 / 'sector' 行业板块 / 'theme' 主题概念，设置页按组展示。
 // 清单里每一个代码都用真实行情接口验证过（能取到名称与现价才会留在这里）。
+// 注意：腾讯行情不支持中证指数公司的新代码段（sh93xxxx / sz98xxxx 之外的 932000 等），
+// 因此「中证2000 sh932000」「中证A50 sh930050」「北证50 sz899050」取不到数据，未收录。
 const INDEX_PRESETS = [
-  // —— 宽基指数 ——
+  // —— 宽基指数：沪 / 深 / 创业板 / 科创板 / 跨市场规模 / 港股 ——
   { symbol: 'sh000001', name: '上证指数', group: 'broad' },
+  { symbol: 'sh000016', name: '上证50', group: 'broad' },
+  { symbol: 'sh000010', name: '上证180', group: 'broad' },
+  { symbol: 'sh000009', name: '上证380', group: 'broad' },
   { symbol: 'sz399001', name: '深证成指', group: 'broad' },
+  { symbol: 'sz399330', name: '深证100', group: 'broad' },
+  { symbol: 'sz399850', name: '深证50', group: 'broad' },
   { symbol: 'sz399006', name: '创业板指', group: 'broad' },
+  { symbol: 'sz399673', name: '创业板50', group: 'broad' },
+  { symbol: 'sz399005', name: '中小100', group: 'broad' },
+  { symbol: 'sh000680', name: '科创综指', group: 'broad' },
+  { symbol: 'sh000688', name: '科创50', group: 'broad' },
+  { symbol: 'sh000698', name: '科创100', group: 'broad' },
+  { symbol: 'sh000699', name: '科创200', group: 'broad' },
   { symbol: 'sh000300', name: '沪深300', group: 'broad' },
   { symbol: 'sh000905', name: '中证500', group: 'broad' },
   { symbol: 'sh000852', name: '中证1000', group: 'broad' },
-  { symbol: 'sh000016', name: '上证50', group: 'broad' },
+  { symbol: 'sh000906', name: '中证800', group: 'broad' },
+  { symbol: 'sh000903', name: '中证A100', group: 'broad' },
+  { symbol: 'sh000510', name: '中证A500', group: 'broad' },
+  { symbol: 'sh000985', name: '中证全指', group: 'broad' },
   { symbol: 'sz399303', name: '国证2000', group: 'broad' },
-  { symbol: 'sz399005', name: '中小100', group: 'broad' },
-  { symbol: 'sh000688', name: '科创50', group: 'broad' },
   { symbol: 'hkHSI', name: '恒生指数', group: 'broad' },
-  // —— 板块指数（行业 / 主题）——
+  { symbol: 'hkHSTECH', name: '恒生科技', group: 'broad' },
+  { symbol: 'hkHSCEI', name: '国企指数', group: 'broad' },
+  // —— 板块指数（行业）——
   { symbol: 'sh000807', name: '食品饮料', group: 'sector' },
   { symbol: 'sz399997', name: '中证白酒', group: 'sector' },
   { symbol: 'sz399396', name: '国证食品', group: 'sector' },
+  { symbol: 'sh000036', name: '上证消费', group: 'sector' },
+  { symbol: 'sh000932', name: '中证消费', group: 'sector' },
   { symbol: 'sh000933', name: '中证医药', group: 'sector' },
   { symbol: 'sz399989', name: '中证医疗', group: 'sector' },
   { symbol: 'sz399441', name: '生物医药', group: 'sector' },
@@ -350,7 +368,10 @@ const INDEX_PRESETS = [
   { symbol: 'sh000992', name: '全指金融', group: 'sector' },
   { symbol: 'sz399811', name: 'CSSW电子', group: 'sector' },
   { symbol: 'sz980017', name: '国证芯片', group: 'sector' },
+  { symbol: 'sh000685', name: '科创芯片', group: 'sector' },
   { symbol: 'sh000998', name: '中证TMT', group: 'sector' },
+  { symbol: 'sh000993', name: '全指信息', group: 'sector' },
+  { symbol: 'sh000994', name: '全指通信', group: 'sector' },
   { symbol: 'sz399363', name: '国证算力', group: 'sector' },
   { symbol: 'sz399971', name: '中证传媒', group: 'sector' },
   { symbol: 'sz399804', name: '中证体育', group: 'sector' },
@@ -364,10 +385,24 @@ const INDEX_PRESETS = [
   { symbol: 'sz399439', name: '国证油气', group: 'sector' },
   { symbol: 'sh000819', name: '有色金属', group: 'sector' },
   { symbol: 'sh000813', name: '细分化工', group: 'sector' },
+  { symbol: 'sh000987', name: '全指材料', group: 'sector' },
+  { symbol: 'sh000812', name: '细分机械', group: 'sector' },
+  { symbol: 'sh000988', name: '全指工业', group: 'sector' },
+  { symbol: 'sz399237', name: '运输指数', group: 'sector' },
+  { symbol: 'sh000995', name: '全指公用', group: 'sector' },
   { symbol: 'sz399995', name: '基建工程', group: 'sector' },
   { symbol: 'sz399393', name: '国证地产', group: 'sector' },
   { symbol: 'sh000949', name: '中证农业', group: 'sector' },
-  { symbol: 'sh000036', name: '上证消费', group: 'sector' },
+  // —— 主题概念 ——
+  { symbol: 'sh000922', name: '中证红利', group: 'theme' },
+  { symbol: 'sh000825', name: '央企红利', group: 'theme' },
+  { symbol: 'sh000964', name: '中证新兴', group: 'theme' },
+  { symbol: 'sh000943', name: '新基建50', group: 'theme' },
+  { symbol: 'sz399991', name: '一带一路', group: 'theme' },
+  { symbol: 'sz399974', name: '国企改革', group: 'theme' },
+  { symbol: 'sz399994', name: '信息安全', group: 'theme' },
+  { symbol: 'sz399996', name: '智能家居', group: 'theme' },
+  { symbol: 'sz399812', name: '养老产业', group: 'theme' },
 ];
 
 function indexName(sym) {
@@ -2697,6 +2732,19 @@ const REPO_URL = 'https://github.com/yohoky/marketmonitor';
 // 版本改动记录（只记 1.4.x，1.4.0 之前不收录）——设置页「关于」卡片直接渲染本数组。
 // 以后发新版只需在最前面加一条，渲染逻辑不用动。
 const CHANGELOG = [
+  {
+    v: '1.5.2', date: '2026-09-17',
+    items: [
+      '指数清单大幅补全：43 → 75 项，分为「宽基指数 / 行业板块 / 主题概念」三组，每一项都用真实行情接口验证过能取到数据',
+      '科创板写全：此前只有科创50，现补上科创综指（sh000680）、科创100、科创200，另有科创芯片',
+      '宽基补齐：上证180 / 上证380 / 深证100 / 深证50 / 创业板50 / 中证800 / 中证A100 / 中证A500 / 中证全指，以及恒生科技、国企指数',
+      '行业板块补齐：全指信息 / 通信 / 材料 / 工业 / 公用事业、细分机械、运输指数、中证消费、科创芯片等',
+      '新增「主题概念」分组：中证红利 / 央企红利 / 中证新兴 / 新基建50 / 一带一路 / 国企改革 / 信息安全 / 智能家居 / 养老产业',
+      '指数库新增搜索框：输入名称或代码即可过滤（支持空格分隔的多个关键词），70+ 项也能快速找到',
+      '分组标题显示项数；搜索无结果时给出提示，不会出现空白一片',
+      '说明：腾讯行情不支持中证指数公司新代码段（中证2000 / 中证A50 / 北证50 等），这几项取不到数据，故未收录',
+    ],
+  },
   {
     v: '1.5.1', date: '2026-09-17',
     items: [

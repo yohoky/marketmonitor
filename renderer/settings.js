@@ -644,17 +644,24 @@ async function renderPosition() {
   }
 }
 
-// ---------- 板块指数（勾选即加入当前列表）----------
+// ---------- 指数库（勾选即加入当前列表）----------
 const idxGrid = document.getElementById('idx-grid');
 const indexCount = document.getElementById('index-count');
+const idxSearch = document.getElementById('idx-search');
 
-// 预设按「宽基 / 板块」两组展示；手写在 config.ini 里的清单外代码归到"其它"，
+// 预设按「宽基 / 行业板块 / 主题概念」三组展示；手写在 config.ini 里的清单外代码归到"其它"，
 // 保证用户自己加的指数在页面上也看得见、能取消勾选。
 const IDX_GROUPS = [
   { key: 'broad', title: '宽基指数' },
-  { key: 'sector', title: '板块指数' },
+  { key: 'sector', title: '行业板块' },
+  { key: 'theme', title: '主题概念' },
   { key: 'other', title: '其它（当前列表里已有的指数）' },
 ];
+// 属于"预设分组"的 group 值；其余一律归入"其它"
+const PRESET_GROUPS = ['broad', 'sector', 'theme'];
+
+// 指数库搜索词（空格分隔的多关键词按「与」匹配，命中名称或代码即可）
+let idxQuery = '';
 
 // 判断一个代码"是不是指数"：上证指数系列 sh000xxx、深证指数系列 sz399xxx、
 // 国证指数 sz980xxx，以及港股/外盘指数（hk 开头）。
@@ -679,21 +686,36 @@ function renderIdxGrid() {
     if (!looksLikeIndex(s.symbol)) continue;
     if (!all.some(p => String(p.symbol).toLowerCase() === key)) all.push({ symbol: s.symbol, name: s.name, group: 'other' });
   }
+  // 搜索：清单有 70+ 项，输入关键字即过滤，省得上下翻。
+  const words = String(idxQuery || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const match = (p) => {
+    if (!words.length) return true;
+    const hay = `${p.name || ''} ${p.symbol || ''}`.toLowerCase();
+    return words.every(w => hay.indexOf(w) >= 0);
+  };
   idxGrid.innerHTML = '';
+  let shown = 0;
   IDX_GROUPS.forEach((g) => {
     const items = all.filter((p) => (g.key === 'other'
-      ? (p.group !== 'broad' && p.group !== 'sector')
-      : p.group === g.key));
+      ? PRESET_GROUPS.indexOf(String(p.group)) < 0
+      : p.group === g.key)).filter(match);
     if (!items.length) return;
+    shown += items.length;
     const title = document.createElement('div');
     title.className = 'idx-group-title';
-    title.textContent = g.title;
+    title.innerHTML = `${escapeHtml(g.title)}<span class="idx-group-num">${items.length}</span>`;
     idxGrid.appendChild(title);
     const bucket = document.createElement('div');
     bucket.className = 'idx-group-items';
     items.forEach((p) => bucket.appendChild(makeIdxItem(p, onMap)));
     idxGrid.appendChild(bucket);
   });
+  if (!shown) {
+    const empty = document.createElement('div');
+    empty.className = 'idx-empty';
+    empty.textContent = `没有匹配「${String(idxQuery).trim()}」的指数，换个关键词试试`;
+    idxGrid.appendChild(empty);
+  }
   if (indexCount) {
     const n = all.filter(p => onMap.has(String(p.symbol).toLowerCase())).length;
     indexCount.textContent = n;
@@ -723,6 +745,14 @@ function makeIdxItem(p, onMap) {
     await commitSymbols(arr);
   });
   return label;
+}
+
+// 搜索框：输入即过滤（本地数组过滤，70+ 项也无需防抖）
+if (idxSearch) {
+  idxSearch.addEventListener('input', (e) => {
+    idxQuery = e.target.value || '';
+    renderIdxGrid();
+  });
 }
 
 // ---------- 异动提醒（当前列表）----------
