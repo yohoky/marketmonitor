@@ -531,6 +531,9 @@ function normalizeList(raw, id, fallbackName) {
       y: parseInt(posY, 10) || 0,
     },
     visible: bool('visible', LIST_WIN_DEFAULTS.visible),
+    // 用户是否【亲手】摆过这个列表的位置（拖过窗口 / 点过九宫格 = true）。
+    // true → 启动时原样保留他存的坐标；false → 按列表顺序自动落位（见 slotPositionFor）。
+    manualPosition: bool('manualPosition', false),
     alerts: normalizeAlerts({
       enabled: r.alertEnabled, thresholdUp: r.alertUp, thresholdDown: r.alertDown,
       direction: r.alertDirection, sound: r.alertSound, cooldownMs: r.alertCooldownMs,
@@ -723,6 +726,7 @@ function saveConfig() {
       lines.push('position-x=' + (l.position?.x || 0));
       lines.push('position-y=' + (l.position?.y || 0));
       lines.push('visible=' + (l.visible ? 'true' : 'false'));
+      lines.push('manualPosition=' + (l.manualPosition ? 'true' : 'false'));
       const a = l.alerts || DEFAULT_ALERTS;
       lines.push('alertEnabled=' + (a.enabled ? 'true' : 'false'));
       lines.push('alertUp=' + (a.thresholdUp ?? DEFAULT_ALERTS.thresholdUp));
@@ -740,8 +744,33 @@ function saveConfig() {
       }
       lines.push('');
     }
-    fs.writeFileSync(CONFIG_PATH, lines.join('\n'), 'utf8');
+    // 原子落盘：先写临时文件再整体替换。直接 writeFileSync 会先把原文件截断，
+    // 万一此刻正有另一个进程/实例在读，就会读到半截内容，表现为"配置莫名其妙回到默认"。
+    const text = lines.join('\n');
+    const tmp = CONFIG_PATH + '.tmp';
+    try {
+      fs.writeFileSync(tmp, text, 'utf8');
+      fs.renameSync(tmp, CONFIG_PATH);
+    } catch (_) {
+      try { fs.unlinkSync(tmp); } catch (_e) {}
+      fs.writeFileSync(CONFIG_PATH, text, 'utf8');   // 极端情况退回直接写
+    }
   } catch (e) { logErr('saveConfig', e); }
+}
+
+// ---------- 单实例保护 ----------
+// 程序常驻托盘，"再打开一次"（双击快捷方式 / 点开始菜单）如果不拦，就会开出第二个进程。
+// 两个进程共用同一份 config.ini 却各持一份内存状态，会互相覆盖、并发写盘，
+// 表现出来就是"我在设置里明明关掉了，重开程序它又自己开了"。
+// 这里让第二个进程直接退出，只保留一个进程持有配置 —— 从根上消除这类"状态打架"。
+const IS_TEST_RUN = triggered('test-alert') || process.env.MM_TEST_ALERT === '1';
+const gotSingleLock = IS_TEST_RUN ? true : (() => {
+  try { return app.requestSingleInstanceLock(); } catch (_) { return true; }
+})();
+if (!gotSingleLock) {
+  // 不读配置、不建窗口、不写任何文件，直接结束本次启动
+  try { app.quit(); } catch (_) {}
+  try { process.exit(0); } catch (_) {}
 }
 
 const store = loadConfig();
@@ -1598,6 +1627,28 @@ function ensureOnScreen(pos, winW, winH) {
   } catch (_) { return true; }
 }
 
+// 按【列表顺序】算出该列表的固定槽位：列表 1 = 最右下角，列表 2 在它上方，依次往上堆。
+// 这是用户口径：自选股（列表 1）是最基本的基本盘，永远贴住右下角；指数 / 基金排在它上面。
+// 关键好处是【确定性】—— 结果只跟列表顺序有关，跟窗口 ready 的先后完全无关，
+// 不会出现"谁先加载完谁抢到右下角"这种每次都不同的随机排布。
+function slotPositionFor(l, indexOverride) {
+  let wa;
+  try { wa = screen.getPrimaryDisplay().workArea; } catch (_) { return { x: 0, y: 0 }; }
+  const w = (l && l.width) || LIST_WIN_DEFAULTS.width;
+  const h = (l && l.height) || LIST_WIN_DEFAULTS.height;
+  const stepX = w + 10, stepY = h + 10;
+  // indexOverride 只给单测用（沙箱里拿不到顶层 store），运行时一律按列表顺序取
+  const idx = typeof indexOverride === 'number'
+    ? Math.max(0, indexOverride)
+    : Math.max(0, (store.lists || []).findIndex(x => x.id === (l && l.id)));
+  const perCol = Math.max(1, Math.floor((wa.height - 2 * EDGE_MARGIN + 10) / stepY));
+  const col = Math.floor(idx / perCol);
+  const row = idx % perCol;
+  const x = wa.x + wa.width - w - EDGE_MARGIN - col * stepX;
+  const y = wa.y + wa.height - h - EDGE_MARGIN - row * stepY;
+  return { x: Math.max(wa.x + EDGE_MARGIN, x), y: Math.max(wa.y + EDGE_MARGIN, y) };
+}
+
 // 给一个还没定位置的新窗口找"不和已有窗口重叠"的落点：
 // 从右下角起，先在同一列往上排，排满再往左一列。实在找不到就退回右下角（重叠也可见）。
 function findFreeSlot(l, others) {
@@ -1636,16 +1687,13 @@ function createWidgetWindow(listId) {
   const alive = widgetWindows.get(listId);
   if (alive && !alive.isDestroyed()) return alive;
 
-  let pos = cfg.position;
-  // 核心修复：config 里可能存着换屏前的大坐标（如 2008,1260），已跑到当前屏幕外，
-  // 导致"任务栏有预览但桌面看不到"。这里检测越界，越界就重找一个可见位置。
-  const useDefault = !pos || (pos.x === 0 && pos.y === 0) || !ensureOnScreen(pos, cfg.width || 220, cfg.height || 88);
-  if (useDefault) {
-    // 已经有别的列表窗口时避开它们，避免两个窗口完全叠在一起
-    const others = otherWindowPositions(listId);
-    pos = others.length ? findFreeSlot(cfg, others) : computeDefaultPosition(cfg);
-    if (!ensureOnScreen(pos, cfg.width, cfg.height)) pos = computeDefaultPosition(cfg);
-  }
+  // 坐标来源只有两种：
+  //  · 用户亲手摆过（manualPosition=true）且坐标还在屏内 → 用他存的那份
+  //  · 否则 → 按列表顺序算固定槽位（列表 1 贴右下角，其余依次排在上方）
+  const saved = cfg.position;
+  const useSaved = cfg.manualPosition === true && saved
+    && ensureOnScreen(saved, cfg.width || 220, cfg.height || 88);
+  const pos = useSaved ? saved : slotPositionFor(cfg);
 
   const win = new BrowserWindow({
     width: cfg.width,
@@ -1705,7 +1753,13 @@ function createWidgetWindow(listId) {
   win.once('ready-to-show', () => {
     const cur = getList(listId);
     if (!cur) return;
-    if (cur.visible === false) { saveConfig(); return; }   // 配成"启动不显示"的列表，从托盘再打开
+    if (cur.visible === false) {
+      // 配成"启动不显示"的列表：窗口不显示，但位置仍要先归位并落盘 ——
+      // 否则用户之后手动打开它时，用的还是旧坐标（可能已经被别的列表占住了）。
+      try { applyAutoSlotIfNeeded(listId); } catch (_) {}
+      saveConfig();
+      return;
+    }
     win.show();
     // 透明度交给渲染层用 CSS 应用（按 config 值重算，启动必然持久），
     // 这里仅兜底调用一次，保证透明窗口也能立刻生效
@@ -1723,21 +1777,20 @@ function createWidgetWindow(listId) {
     try {
       const p = win.getPosition();
       sz = win.getSize();
-      const a = detectCorner({ x: p[0], y: p[1] }, { width: sz[0], height: sz[1] });
-      let np = a ? computeAnchoredPosition(a, cur) : null;
-      // 关键：如果当前坐标不在屏内（换屏/换分辨率后跑飞），强制拉回默认位置
-      if (!np || !ensureOnScreen(np, sz[0], sz[1])) {
-        np = computeDefaultPosition(cur);
-        wasClamped = true;
-      }
-      // 多列表避让：上面两步（贴角对齐 / 拉回默认位）都可能把窗口【精确压回】另一个
-      // 列表的坐标上 —— 从 v1.4.x 升级上来时两个列表共用同一份遗留坐标，必然发生，
-      // 结果是两个窗口完全重合、只能看见一个。这里最后再避让一次并持久化新坐标，
-      // 保证每个列表都露得出来，且重启后不会被重新叠回去。
-      const others = otherWindowPositions(listId);
-      if (others.some((o) => Math.abs(o.x - np.x) < 6 && Math.abs(o.y - np.y) < 6)) {
-        np = findFreeSlot(cur, others);
-        wasClamped = true;
+      let np;
+      if (cur.manualPosition === true) {
+        // 用户亲手摆过 → 原样保留他的坐标（贴角时顺手精修到精确像素）。
+        // 注意：这里【绝不能】因为"没贴角"就重置位置 —— 那会让拖到屏幕中间的位置
+        // 每次重启都被弹回右下角，表现就是"位置拖了也存不下来"。
+        const a = detectCorner({ x: p[0], y: p[1] }, { width: sz[0], height: sz[1] });
+        np = a ? computeAnchoredPosition(a, cur) : { x: p[0], y: p[1] };
+        // 唯一会动他位置的情况：坐标跑到屏幕外（换显示器 / 改分辨率）
+        if (!ensureOnScreen(np, sz[0], sz[1])) { np = slotPositionFor(cur); wasClamped = true; }
+      } else {
+        // 没亲手摆过 → 按列表顺序落位。每次都算成同一个结果，
+        // 所以"自选股贴右下角、指数在它上面"不会因为启动顺序不同而变化。
+        np = slotPositionFor(cur);
+        if (np.x !== p[0] || np.y !== p[1]) wasClamped = true;
       }
       if (np.x !== p[0] || np.y !== p[1]) {
         win.setPosition(np.x, np.y);
@@ -1810,14 +1863,18 @@ function createWidgetWindow(listId) {
     });
   }
 
-  // 拖动后保存位置（拖动过程中会高频触发，做防抖，避免每帧写盘）
-  win.on('moved', () => {
+  // 拖动后保存位置（拖动过程中会高频触发，做防抖，避免每帧写盘）。
+  // 必须同时挂 move 和 moved：Windows 上程序化 setPosition() 只发 move、不发 moved，
+  // 只挂 moved 的话"拖动结束把位置写回 config"整条链路是断的，重启后位置就丢了。
+  const onWinMove = () => {
     const cur = getList(listId);
     if (!cur || win.isDestroyed()) return;
     try { const [x, y] = win.getPosition(); cur.position = { x, y }; } catch (_) { return; }
     if (posSaveTimer) clearTimeout(posSaveTimer);
     posSaveTimer = setTimeout(() => { posSaveTimer = null; saveConfig(); }, 400);
-  });
+  };
+  win.on('moved', onWinMove);
+  win.on('move', onWinMove);
 
   win.on('closed', () => {
     winListId.delete(win);
@@ -1837,6 +1894,29 @@ function destroyWidgetWindow(listId) {
   }
 }
 
+// 没被用户亲手摆过位置的列表：把它挪回"按列表顺序算出来"的那个槽位。
+// 什么时候要调：它第一次显示、以及之后每次从隐藏状态被打开之前。
+// 手动拖过 / 点过九宫格的列表（manualPosition=true）一律不打扰。
+function applyAutoSlotIfNeeded(listId) {
+  const l = getList(listId);
+  const w = widgetWindows.get(listId);
+  if (!l || l.manualPosition === true) return false;
+  const np = slotPositionFor(l);
+  let changed = false;
+  try {
+    // ① config 里的坐标也要跟上：窗口是新建的，创建时就按槽位摆好了，
+    //    若这里只看窗口位置就提前返回，config 会一直残留旧坐标（设置页读数会骗人）。
+    if (!l.position || l.position.x !== np.x || l.position.y !== np.y) { l.position = np; changed = true; }
+    // ② 窗口（如果已经建好）也摆到槽位
+    if (w && !w.isDestroyed()) {
+      const [x, y] = w.getPosition();
+      if (x !== np.x || y !== np.y) { w.setPosition(np.x, np.y); changed = true; }
+    }
+  } catch (e) { logErr('applyAutoSlotIfNeeded', e); }
+  if (changed) saveConfig();
+  return changed;
+}
+
 // 关闭【单个】列表的小组件（小组件的「×」按钮走这里）：
 // 隐藏它的窗口 + 把「启动时显示」置 false 持久化，其它列表完全不受影响。
 function closeListWidget(listId) {
@@ -1854,6 +1934,7 @@ function showListWidget(listId) {
   saveConfig();
   let w = widgetWindows.get(listId);
   if (!w || w.isDestroyed()) w = createWidgetWindow(listId);
+  applyAutoSlotIfNeeded(listId);   // 显示前先归位到自己的槽位（手动摆过的除外）
   if (w && !w.isDestroyed()) { try { w.show(); w.focus(); } catch (e) { logErr('showListWidget', e); } }
 }
 
@@ -2144,6 +2225,7 @@ ipcMain.handle('save-list', (_e, listId, patch) => {
     jumpMs: pick('jumpMs', l.jumpMs),
     position: pick('position', l.position),
     visible: pick('visible', l.visible),
+    manualPosition: pick('manualPosition', l.manualPosition),
     alerts: pick('alerts', l.alerts),
     mail: pick('mail', l.mail),
   }, listId, l.name);
@@ -2171,6 +2253,7 @@ ipcMain.handle('save-list', (_e, listId, patch) => {
   }
   if (p.visible !== undefined) {
     const w = widgetWindows.get(listId);
+    if (l.visible) applyAutoSlotIfNeeded(listId);   // 打开前先归位（手动摆过的除外）
     if (w && !w.isDestroyed()) { try { l.visible ? w.show() : w.hide(); } catch (_) {} }
   }
   if (p.symbols !== undefined) { alertPrimed = false; tick(); }   // 标的变了立即刷新并重新对齐基准
@@ -2432,6 +2515,7 @@ ipcMain.handle('set-widget-position', (_e, listId, anchor) => {
   if (!l) return null;
   const pos = computeAnchoredPosition(String(anchor || 'bottom-right'), l);
   l.position = pos;
+  l.manualPosition = true;   // 用户在设置页主动指定了位置 → 之后启动原样保留
   const w = widgetWindows.get(listId);
   if (w && !w.isDestroyed()) {
     try { w.setPosition(pos.x, pos.y); } catch (e) { logErr('setPosition', e); }
@@ -2494,6 +2578,18 @@ ipcMain.on('widget-drag-move', (e) => {
 ipcMain.on('widget-drag-end', (e) => {
   const w = BrowserWindow.fromWebContents(e.sender);
   if (w) dragState.delete(w);
+  // 显式把拖动后的最终坐标写回该列表再落盘 —— 不依赖 move/moved 事件是否到达，
+  // 保证"松手即保存"这条路径无论如何都成立。
+  if (w && !w.isDestroyed()) {
+    const l = listOfWindow(w);
+    if (l) {
+      try {
+        const [x, y] = w.getPosition();
+        l.position = { x, y };
+        l.manualPosition = true;   // 用户亲手摆过 → 以后启动都原样保留这个位置
+      } catch (_) {}
+    }
+  }
   try { saveConfig(); } catch (err) { logErr('drag-end', err); }
 });
 
@@ -2515,7 +2611,12 @@ ipcMain.handle('widget-toggle-topmost', (e) => {
 // 长期设置（在设置页里改）。否则用户从托盘隐藏一次，重启后就再也不出现了，很容易以为程序坏了。
 function showAllWidgets() {
   syncWidgetWindows(false);
-  eachWidget((w) => {
+  eachWidget((w, id) => {
+    // 用户明确关掉的列表（启动时显示 = 否）不因为一句"显示全部"就自己冒出来 ——
+    // 想让它回来，请走「监控列表 → 该列表 → 显示」，那才是明确的开启动作。
+    const l = getList(id);
+    if (l && l.visible === false) return;
+    applyAutoSlotIfNeeded(id);
     try {
       if (!w.isVisible()) w.show();
       if (w.isMinimized()) w.restore();
@@ -2530,7 +2631,11 @@ function hideAllWidgets() {
 // 托盘左键：只要还有窗口可见就全隐藏，否则全显示
 function toggleWidgets() {
   syncWidgetWindows(false);
-  const shown = [...widgetWindows.values()].some(w => w && !w.isDestroyed() && w.isVisible());
+  const shown = [...widgetWindows.entries()].some(([id, w]) => {
+    if (!w || w.isDestroyed() || !w.isVisible()) return false;
+    const l = getList(id);
+    return !l || l.visible !== false;
+  });
   if (shown) hideAllWidgets(); else showAllWidgets();
 }
 
@@ -2555,7 +2660,7 @@ function createTray() {
 
   // 「监控列表」子菜单：每个列表一行，点开就是该列表的设置；列表多了也能单独显隐
   const listItems = (store.lists || []).map(l => ({
-    label: `${l.name}（${(l.symbols || []).length} 只）`,
+    label: `${l.name}（${(l.symbols || []).length} 只）${l.visible === false ? ' · 已关闭' : ''}`,
     submenu: [
       { label: '打开设置...', click: () => { try { openSettings(l.id); } catch (e) { logErr('openSettings', e); } } },
       { label: '显示', click: () => { try { showListWidget(l.id); } catch (e) { logErr('tray-show-list', e); } } },
@@ -2592,6 +2697,16 @@ const REPO_URL = 'https://github.com/yohoky/marketmonitor';
 // 版本改动记录（只记 1.4.x，1.4.0 之前不收录）——设置页「关于」卡片直接渲染本数组。
 // 以后发新版只需在最前面加一条，渲染逻辑不用动。
 const CHANGELOG = [
+  {
+    v: '1.5.1', date: '2026-09-17',
+    items: [
+      '修复：拖动小组件后的位置存不下来（重启会被弹回右下角）—— 现在松手即保存，重启原样恢复',
+      '修复：重启程序后，设置里已关掉的列表窗口又自己冒出来 —— 程序改为单实例运行，且「显示全部小组件」不再强行打开已关闭的列表',
+      '列表默认排布改为按列表顺序堆叠：第 1 个列表（自选股）固定贴住右下角，其余依次排在它上方，不再受窗口加载先后影响',
+      '配置文件改为原子写入（先写临时文件再整体替换），避免多开或异常退出时把配置写坏',
+      '说明：本次升级后，之前没有手动拖过位置的列表会自动按新规则排一次；拖动过／点过九宫格的列表位置保持不变',
+    ],
+  },
   {
     v: '1.5.0', date: '2026-09-17',
     items: [
@@ -2809,7 +2924,7 @@ if (triggered('test-alert') || process.env.MM_TEST_ALERT === '1') {
   console.log(log.join('\n'));
   const done = () => { try { app.quit(); } catch (_) {} setTimeout(() => process.exit(0), 1500); };
   if (app.isReady()) done(); else app.once('ready', done);
-} else {
+} else if (gotSingleLock) {
   app.whenReady().then(() => {
     buildAppMenu();
     syncWidgetWindows(true);   // 按 store.lists 把每个列表的窗口都建起来
