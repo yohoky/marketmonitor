@@ -63,6 +63,15 @@ const INI_TEMPLATE = `; ==================================================
 ;            opacity      = 背景不透明度 0.05~1.0（只淡卡片底色，文字不受影响）
 ;            textOpacity  = 文字不透明度 0.05~1.0（只淡文字/数字，背景不受影响）
 ;            mono         = true 黑白模式（涨跌不用红绿，改深浅灰，摸鱼更隐蔽）
+;            scrollMs     = 滚动模式：每滚动一行耗时(毫秒)，越小滚得越快。默认 3000，范围 800~15000
+;            jumpMs       = 跳动模式：每次翻页停留(毫秒)。默认 3000，范围 1000~20000
+;            （旧版 rotationMs 仍兼容：仅当 scrollMs / jumpMs 缺失时，用它作为两者的初始值）
+;
+;  [indexes] 大盘指数，一行一个代码（设置页勾选后自动写入）。支持的代码：
+;              sh000001 上证指数   sz399001 深证成指   sz399006 创业板指
+;              sh000300 沪深300    sh000905 中证500    sh000688 科创50
+;              hkHSI    恒生指数
+;            指数显示在自选股之后，同样参与滚动 / 跳动与异动提醒。
 ;
 ;  [alerts]  异动提醒
 ;            threshold   触发阈值(%) 绝对值
@@ -72,6 +81,18 @@ const INI_TEMPLATE = `; ==================================================
 ;            tradingHours 仅开盘时段提醒 true/false（默认 true）
 ;            market       a(A股) / hk(港股) / both(两者)，决定按哪个市场的开盘时段静默
 ;                         A股 09:25–11:35 / 12:55–15:05，港股 09:00–12:00 / 13:00–16:00，周末除外
+;
+;  [email]   邮件推送：触发异动后把明细发到指定邮箱（阈值可单独设置，默认与异动阈值一致）
+;            enabled          true 开启邮件推送（默认 false，需先填好账号授权码）
+;            host             SMTP 服务器，如 smtp.qq.com / smtp.163.com / smtp.exmail.qq.com
+;            port             465(SSL) / 587(STARTTLS) / 25
+;            secure           true=SSL 直连(配 465)，false=STARTTLS 或明文(配 587/25)
+;            user             发件邮箱账号（完整邮箱地址）
+;            pass             邮箱「授权码」——不是登录密码！QQ/163 需先在邮箱设置里开启 SMTP 并生成授权码
+;            to               收件邮箱，多个用英文逗号分隔
+;            followAlerts     true=邮件阈值跟随 [alerts]（默认）；false=用下面的独立阈值
+;            thresholdUp      邮件涨幅阈值(%)，followAlerts=false 时生效
+;            thresholdDown    邮件跌幅阈值(%)，followAlerts=false 时生效
 ; ==================================================
 
 [stocks]
@@ -87,12 +108,16 @@ sz000977
 sz300001 特锐德
 sh600362
 
+; 大盘指数：到设置页「大盘指数」卡片勾选即可，也可直接在此行下方写代码（如 sh000001 上证指数）
+[indexes]
+
 [widget]
 width=220
 height=84
 topMost=true
 fetchIntervalMs=30000
-rotationMs=3000
+scrollMs=3000
+jumpMs=3000
 opacity=1.0
 textOpacity=1.0
 mono=false
@@ -109,6 +134,18 @@ sound=true
 cooldownMs=180000
 tradingHours=true
 market=a
+
+[email]
+enabled=false
+host=smtp.qq.com
+port=465
+secure=true
+user=
+pass=
+to=
+followAlerts=true
+thresholdUp=3.9
+thresholdDown=3.9
 `;
 
 // 简单 INI 解析（满足本项目需求即可）
@@ -139,6 +176,71 @@ const DEFAULT_ALERTS = {
   tradingHours: true,    // 仅开盘时段提醒（默认开启，周末除外）
   market: 'a',           // 提醒市场：a(A股) / hk(港股) / both(A股+港股)
 };
+
+// ---------- 邮件推送配置 ----------
+// 阈值默认跟随 [alerts]（followAlerts=true）；也可单独设置，
+// 实现"邮件阈值和异动阈值不一样"（例如异动 3.9% 提醒、邮件只在 6% 才发）。
+const DEFAULT_EMAIL = {
+  enabled: false,          // 默认关闭：没填账号授权码前不应产生后台报错
+  host: 'smtp.qq.com',
+  port: 465,
+  secure: true,            // 465 用 SSL 直连；587/25 走 STARTTLS
+  user: '',
+  pass: '',                // 邮箱授权码（不是登录密码）
+  to: '',                  // 收件人，多个用英文逗号分隔
+  followAlerts: true,      // true = 邮件阈值跟随异动提醒阈值
+  thresholdUp: 3.9,        // followAlerts=false 时生效
+  thresholdDown: 3.9,
+};
+
+function clampPort(v, fb) {
+  const n = parseInt(v, 10);
+  return (isFinite(n) && n > 0 && n < 65536) ? n : fb;
+}
+
+function normalizeEmail(raw) {
+  const r = raw || {};
+  const bool = (v, fb) => (v === undefined || v === '' ? fb : (String(v) !== 'false'));
+  const host = String(r['host'] || '').trim() || DEFAULT_EMAIL.host;
+  const port = clampPort(r['port'], DEFAULT_EMAIL.port);
+  // 没写 secure 时按端口推断：465 = SSL 直连，其余 = STARTTLS / 明文
+  const secure = (r['secure'] === undefined || r['secure'] === '')
+    ? (port === 465)
+    : (String(r['secure']) !== 'false');
+  const up = clampTh(r['thresholdUp']);
+  const down = clampTh(r['thresholdDown']);
+  return {
+    enabled: bool(r['enabled'], DEFAULT_EMAIL.enabled),
+    host,
+    port,
+    secure,
+    user: String(r['user'] || '').trim(),
+    pass: String(r['pass'] || ''),
+    to: String(r['to'] || '').split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean).join(','),
+    followAlerts: bool(r['followAlerts'], DEFAULT_EMAIL.followAlerts),
+    thresholdUp: up !== null ? up : DEFAULT_EMAIL.thresholdUp,
+    thresholdDown: down !== null ? down : DEFAULT_EMAIL.thresholdDown,
+  };
+}
+
+// ---------- 大盘指数预设 ----------
+// 指数代码必须带前缀：纯 000001 会被识别成平安银行(sz000001)，所以一律写全。
+// 腾讯财经对指数的字段布局与个股完全一致（31=涨跌 32=涨跌幅），可共用解析。
+const INDEX_PRESETS = [
+  { symbol: 'sh000001', name: '上证指数' },
+  { symbol: 'sz399001', name: '深证成指' },
+  { symbol: 'sz399006', name: '创业板指' },
+  { symbol: 'sh000300', name: '沪深300' },
+  { symbol: 'sh000905', name: '中证500' },
+  { symbol: 'sh000688', name: '科创50' },
+  { symbol: 'hkHSI',    name: '恒生指数' },
+];
+
+function indexName(sym) {
+  const key = String(sym || '').toLowerCase();
+  const hit = INDEX_PRESETS.find(x => x.symbol.toLowerCase() === key);
+  return hit ? hit.name : sym;
+}
 
 // 阈值取值：优先用 thresholdUp / thresholdDown；旧配置的 threshold 作为兜底
 function clampTh(v) {
@@ -207,14 +309,34 @@ function loadConfig() {
         if (eq === -1) continue;
         ac[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
       }
+      const ec = {};
+      for (const line of (sections['email'] || [])) {
+        const eq = line.indexOf('=');
+        if (eq === -1) continue;
+        ec[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+      }
+      // 大盘指数：一行一个，支持 "sh000001" / "sh000001 上证指数"
+      const indexes = (sections['indexes'] || []).map((line) => {
+        const parts = String(line).trim().split(/\s+/);
+        const sym = (parts[0] || '').trim();
+        if (!sym) return null;
+        const nm = parts.slice(1).join(' ');
+        return { symbol: sym, name: nm || indexName(sym) };
+      }).filter(Boolean);
       return {
         stocks,
+        indexes,
         widget: {
           width: parseInt(cfg['width']) || 220,
           height: parseInt(cfg['height']) || 84,
           topMost: cfg['topMost'] !== 'false',
           fetchIntervalMs: parseInt(cfg['fetchIntervalMs']) || 30000,
-          rotationMs: parseInt(cfg['rotationMs']) || 3000,
+          // 滚动速率 / 跳动间隔：拆成两个独立参数，互不干扰；
+          // 旧配置只有 rotationMs 时由它兜底，保证升级后观感不变
+          scrollMs: Math.max(800, Math.min(15000,
+            parseInt(cfg['scrollMs']) || parseInt(cfg['rotationMs']) || 3000)),
+          jumpMs: Math.max(1000, Math.min(20000,
+            parseInt(cfg['jumpMs']) || parseInt(cfg['rotationMs']) || 3000)),
           opacity: parseFloat(cfg['opacity']) || 1.0,
           textOpacity: Math.max(0.05, Math.min(1.0, parseFloat(cfg['textOpacity']))) || 1.0,
           mono: cfg['mono'] === 'true',
@@ -225,6 +347,7 @@ function loadConfig() {
           },
         },
         alerts: normalizeAlerts(ac),
+        email: normalizeEmail(ec),
       };
     } catch (_) { /* fall through to template */ }
   }
@@ -244,14 +367,16 @@ function loadConfig() {
       { symbol: 'sz300001', name: '特锐德' },
       { symbol: 'sh600362', name: 'sh600362' },
     ],
+    indexes: [],
     widget: {
       width: 220, height: 84, topMost: true,
-      fetchIntervalMs: 30000, rotationMs: 3000, opacity: 1.0,
+      fetchIntervalMs: 30000, scrollMs: 3000, jumpMs: 3000, opacity: 1.0,
       textOpacity: 1.0, mono: false,
       displayMode: 'scroll',
       position: { x: 0, y: 0 },
     },
     alerts: { ...DEFAULT_ALERTS },
+    email: { ...DEFAULT_EMAIL },
   };
 }
 
@@ -271,12 +396,18 @@ function saveConfig() {
       lines.push(s.symbol + (s.name && s.name !== s.symbol ? ' ' + s.name : ''));
     }
     lines.push('');
+    lines.push('[indexes]');
+    for (const s of (store.indexes || [])) {
+      lines.push(s.symbol + (s.name && s.name !== s.symbol ? ' ' + s.name : ''));
+    }
+    lines.push('');
     lines.push('[widget]');
     lines.push('width=' + store.widget.width);
     lines.push('height=' + store.widget.height);
     lines.push('topMost=' + (store.widget.topMost ? 'true' : 'false'));
     lines.push('fetchIntervalMs=' + store.widget.fetchIntervalMs);
-    lines.push('rotationMs=' + store.widget.rotationMs);
+    lines.push('scrollMs=' + (store.widget.scrollMs ?? 3000));
+    lines.push('jumpMs=' + (store.widget.jumpMs ?? 3000));
     lines.push('opacity=' + store.widget.opacity);
     lines.push('textOpacity=' + (store.widget.textOpacity ?? 1.0));
     lines.push('mono=' + (store.widget.mono ? 'true' : 'false'));
@@ -294,6 +425,19 @@ function saveConfig() {
     lines.push('cooldownMs=' + a.cooldownMs);
     lines.push('tradingHours=' + (a.tradingHours ? 'true' : 'false'));
     lines.push('market=' + (['a', 'hk', 'both'].includes(a.market) ? a.market : 'a'));
+    lines.push('');
+    const m = store.email || DEFAULT_EMAIL;
+    lines.push('[email]');
+    lines.push('enabled=' + (m.enabled ? 'true' : 'false'));
+    lines.push('host=' + (m.host || DEFAULT_EMAIL.host));
+    lines.push('port=' + (m.port || DEFAULT_EMAIL.port));
+    lines.push('secure=' + (m.secure ? 'true' : 'false'));
+    lines.push('user=' + (m.user || ''));
+    lines.push('pass=' + (m.pass || ''));
+    lines.push('to=' + (m.to || ''));
+    lines.push('followAlerts=' + (m.followAlerts !== false ? 'true' : 'false'));
+    lines.push('thresholdUp=' + (m.thresholdUp ?? DEFAULT_EMAIL.thresholdUp));
+    lines.push('thresholdDown=' + (m.thresholdDown ?? DEFAULT_EMAIL.thresholdDown));
     lines.push('');
     fs.writeFileSync(CONFIG_PATH, lines.join('\n'), 'utf8');
   } catch (_) {}
@@ -343,9 +487,12 @@ function isInTradingHours(d, market) {
  * 纯函数：按配置判定一批行情中哪些触发异动。
  * 规则：|涨跌幅| >= threshold，且方向匹配；同一只在 cooldownMs 内不重复；数值未变化不重复。
  * 额外：tradingHours(默认 true) 时，仅在 A 股开盘时段内提醒，其余时段静默。
+ * @param state 可选：冷却状态表。本机提醒用默认的 alertState，
+ *              邮件推送传入独立的 mailAlertState —— 两条通道的阈值/冷却互不干扰。
  */
-function evalAlerts(quotes, cfg, now) {
+function evalAlerts(quotes, cfg, now, state) {
   const out = [];
+  const st = state || alertState;
   const ts = now == null ? Date.now() : now;
   if (!cfg || !cfg.enabled || !Array.isArray(quotes)) return out;
   // 仅开盘时段提醒：非成交时段（北京时间，按所选市场 A股/港股）整体静默，避免收盘后/夜间/周末仍轰炸
@@ -365,18 +512,19 @@ function evalAlerts(quotes, cfg, now) {
     if (dir === 'up' && !up) continue;
     if (dir === 'down' && up) continue;
     if (Math.abs(pct) < (up ? thUp : thDown)) continue;   // 涨用涨幅阈值，跌用跌幅阈值
-    const prev = alertState.get(q.symbol);
+    const prev = st.get(q.symbol);
     if (prev) {
       if (ts - prev.ts < cooldown) continue;       // 冷却期内静默
       if (prev.pct === pct) continue;              // 数值没变化，不重复打扰
     }
-    alertState.set(q.symbol, { ts, pct });
+    st.set(q.symbol, { ts, pct });
     out.push({
       symbol: q.symbol,
       name: q.name || q.symbol,
       price: q.price || 0,
       changePct: pct,
       up,
+      threshold: up ? thUp : thDown,   // 供邮件正文回显"按哪个阈值触发的"
     });
   }
   return out;
@@ -413,11 +561,296 @@ function checkAlerts(quotes) {
   return hits;
 }
 
+// ---------- 邮件推送 ----------
+// 设计要点：
+//   1) 零依赖：自己实现最小 SMTP 客户端（EHLO / STARTTLS / AUTH LOGIN / MAIL / RCPT / DATA），
+//      不引入 nodemailer —— 避免往 app.asar 里塞 node_modules，热部署链路保持"只替换 js 文件"。
+//   2) 独立阈值：默认跟随 [alerts]（followAlerts=true），也可单独设置。
+//   3) 独立冷却：mailAlertState 与 alertState 分开，同一只股票的"本机提醒"和"邮件"互不吞掉。
+//   4) 异步串行发送，失败只写 error.log / maillog.txt，绝不影响行情刷新主循环。
+const nodeNet = require('net');
+const nodeTls = require('tls');
+
+const mailAlertState = new Map();
+let mailQueue = Promise.resolve();
+
+function mailCfgReady() {
+  const e = store.email || DEFAULT_EMAIL;
+  return !!(e.enabled && e.host && e.user && e.pass && e.to);
+}
+
+// 邮件判定配置：followAlerts=true 时阈值/方向/冷却/开盘时段全部跟随异动提醒
+function buildMailAlertCfg() {
+  if (!mailCfgReady()) return null;
+  const e = store.email;
+  const a = store.alerts || DEFAULT_ALERTS;
+  return {
+    enabled: true,
+    thresholdUp: e.followAlerts !== false ? a.thresholdUp : e.thresholdUp,
+    thresholdDown: e.followAlerts !== false ? a.thresholdDown : e.thresholdDown,
+    direction: a.direction,
+    cooldownMs: a.cooldownMs,
+    tradingHours: a.tradingHours,
+    market: a.market,
+  };
+}
+
+// base64 按 76 字符折行（SMTP 行长限制）
+function base64Wrap(s) {
+  const b = Buffer.from(String(s), 'utf8').toString('base64');
+  const out = [];
+  for (let i = 0; i < b.length; i += 76) out.push(b.slice(i, i + 76));
+  return out;
+}
+
+function buildMailMessage({ from, to, subject, text }) {
+  const head = [
+    'From: "Marketmonitor" <' + from + '>',
+    'To: ' + to.join(','),
+    // 主题含中文必须做 RFC2047 编码，否则收件箱里是乱码
+    'Subject: =?UTF-8?B?' + Buffer.from(String(subject), 'utf8').toString('base64') + '?=',
+    'Date: ' + new Date().toUTCString(),
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+  ];
+  return head.concat(base64Wrap(text)).join('\r\n');
+}
+
+/**
+ * 最小 SMTP 客户端。支持：
+ *   465 → secure=true，直接 TLS；
+ *   587/25 → secure=false，若服务器支持 STARTTLS 则先升级再认证（避免明文传授权码）。
+ * 返回 Promise，失败时 reject(Error)，错误信息尽量可读（直接告诉用户该改哪里）。
+ */
+function smtpSend(opts) {
+  return new Promise((resolve, reject) => {
+    const { host, port, secure, user, pass, from, to, subject, text } = opts;
+    const TIMEOUT = 20000;
+    let sock = null;
+    let buf = '';
+    let lines = [];
+    let stage = 'greet';
+    let tlsTried = false;
+    let rcptIdx = 0;
+    let settled = false;
+    const caps = { starttls: false, authLogin: false };
+
+    const timer = setTimeout(() => fail('SMTP 超时（20 秒无响应）：请检查服务器地址 / 端口 / 本机防火墙'), TIMEOUT);
+
+    function finish(err) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { if (sock) sock.destroy(); } catch (_) {}
+      if (err) reject(err); else resolve(true);
+    }
+    function fail(m) { finish(new Error(m)); }
+    function send(line) {
+      try { sock.write(line + '\r\n'); } catch (e) { fail('写入失败：' + e.message); }
+    }
+
+    function attach(s) {
+      s.setEncoding('utf8');
+      s.on('data', (chunk) => { buf += chunk; pump(); });
+      s.on('error', (e) => fail('网络错误：' + e.message));
+      s.on('timeout', () => fail('连接超时'));
+      s.on('close', () => { if (!settled && stage !== 'done') fail('连接被服务器提前关闭'); });
+    }
+
+    // 按行解析响应；SMTP 多行响应形如 "250-xxx"，第 4 个字符是 '-' 表示还有续行
+    function pump() {
+      let i;
+      while ((i = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, i).replace(/\r$/, '');
+        buf = buf.slice(i + 1);
+        lines.push(line);
+        if (line.length >= 4 && line[3] === '-') continue;
+        const code = parseInt(line.slice(0, 3), 10);
+        const full = lines.join(' | ');
+        lines = [];
+        if (settled) return;
+        if (!isFinite(code)) continue;
+        handle(code, full);
+        if (settled) return;
+      }
+    }
+
+    function handle(code, full) {
+      const lower = full.toLowerCase();
+      if (code >= 400) {
+        return fail('SMTP ' + code + '：' + (full.split(' | ').pop() || '').slice(0, 140));
+      }
+      switch (stage) {
+        case 'greet':
+          if (code !== 220) return fail('SMTP 未就绪（' + code + '）');
+          stage = 'ehlo';
+          return send('EHLO marketmonitor');
+        case 'ehlo':
+          caps.starttls = /starttls/.test(lower);
+          caps.authLogin = /auth[\s\S]*login/.test(lower);
+          if (!secure && !tlsTried && caps.starttls) {
+            tlsTried = true;
+            stage = 'starttls';
+            return send('STARTTLS');
+          }
+          if (!caps.authLogin) return fail('该服务器未提供 AUTH LOGIN 认证方式（可尝试改用 465 端口 + SSL）');
+          stage = 'authUser';
+          return send('AUTH LOGIN');
+        case 'starttls':
+          if (code !== 220) return fail('STARTTLS 失败（' + code + '）');
+          sock = nodeTls.connect({ socket: sock, servername: host, rejectUnauthorized: false }, () => {
+            stage = 'ehlo';
+            send('EHLO marketmonitor');
+          });
+          return attach(sock);
+        case 'authUser':
+          if (code !== 334) return fail('AUTH LOGIN 未被接受（' + code + '）');
+          stage = 'authPass';
+          return send(Buffer.from(user, 'utf8').toString('base64'));
+        case 'authPass':
+          if (code !== 334) return fail('AUTH 用户名未被接受（' + code + '）');
+          stage = 'authDone';
+          return send(Buffer.from(pass, 'utf8').toString('base64'));
+        case 'authDone':
+          if (code !== 235) {
+            return fail('认证失败（' + code + '）：请确认填的是邮箱「授权码」而不是登录密码，并已在邮箱设置里开启 SMTP 服务');
+          }
+          stage = 'mailFrom';
+          return send('MAIL FROM:<' + from + '>');
+        case 'mailFrom':
+          if (code !== 250) return fail('发件人被拒绝（' + code + '）：' + full.slice(0, 120));
+          stage = 'rcpt';
+          return send('RCPT TO:<' + to[rcptIdx] + '>');
+        case 'rcpt':
+          if (code !== 250 && code !== 251) return fail('收件人被拒绝（' + code + '）：' + to[rcptIdx]);
+          rcptIdx += 1;
+          if (rcptIdx < to.length) return send('RCPT TO:<' + to[rcptIdx] + '>');
+          stage = 'data';
+          return send('DATA');
+        case 'data':
+          if (code !== 354) return fail('DATA 未被接受（' + code + '）');
+          stage = 'body';
+          try { sock.write(buildMailMessage({ from, to, subject, text }) + '\r\n.\r\n'); }
+          catch (e) { return fail('写正文失败：' + e.message); }
+          return;
+        case 'body':
+          if (code !== 250) return fail('邮件被服务器拒绝（' + code + '）');
+          stage = 'done';
+          send('QUIT');
+          return finish(null);
+        default:
+          return;
+      }
+    }
+
+    try {
+      sock = secure
+        ? nodeTls.connect({ host, port, servername: host, rejectUnauthorized: false })
+        : nodeNet.connect({ host, port });
+      attach(sock);
+    } catch (e) { return fail('无法连接 SMTP：' + e.message); }
+  });
+}
+
+// 组装邮件内容
+function buildAlertMail(a) {
+  const sign = a.up ? '+' : '';
+  const bj = new Date(Date.now() + 8 * 3600 * 1000);
+  const tstr = bj.toISOString().replace('T', ' ').slice(0, 19);
+  const subject = `[Marketmonitor] ${a.name} ${sign}${Number(a.changePct).toFixed(2)}%`;
+  const text = [
+    `异动提醒：${a.name}（${a.symbol}）${a.up ? '上涨' : '下跌'} ${sign}${Number(a.changePct).toFixed(2)}%`,
+    '',
+    `名称：${a.name}`,
+    `代码：${a.symbol}`,
+    `现价：${Number(a.price).toFixed(2)}`,
+    `涨跌幅：${sign}${Number(a.changePct).toFixed(2)}%`,
+    `触发阈值：${a.threshold != null ? a.threshold + '%' : '（测试邮件）'}`,
+    `时间：${tstr}（北京时间）`,
+    '',
+    '—— 由 Marketmonitor 桌面行情小组件自动发送（阈值可在「设置 → 邮件推送」调整）',
+  ].join('\n');
+  return { subject, text };
+}
+
+function writeMailLog(line) {
+  try { fs.appendFileSync(path.join(path.dirname(CONFIG_PATH), 'maillog.txt'), line + '\n', 'utf8'); } catch (_) {}
+}
+
+// 排进发送队列：串行执行，单封失败不影响后续
+function queueAlertMail(a) {
+  const e = store.email || DEFAULT_EMAIL;
+  const to = String(e.to || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!to.length) return;
+  const mail = buildAlertMail(a);
+  mailQueue = mailQueue
+    .then(() => smtpSend({
+      host: e.host, port: e.port, secure: e.secure,
+      user: e.user, pass: e.pass, from: e.user, to,
+      subject: mail.subject, text: mail.text,
+    }))
+    .then(() => {
+      console.log('[mail] 已发送:', mail.subject, '->', e.to);
+      writeMailLog(`[${new Date().toISOString()}] OK   ${mail.subject} -> ${e.to}`);
+    })
+    .catch((err) => {
+      logErr('sendAlertMail', err);
+      writeMailLog(`[${new Date().toISOString()}] FAIL ${mail.subject} -> ${e.to}：${err.message}`);
+    });
+}
+
+// 每轮行情：用邮件阈值独立判定并推送
+function checkEmailAlerts(quotes) {
+  const cfg = buildMailAlertCfg();
+  if (!cfg) return [];
+  const hits = evalAlerts(quotes, cfg, Date.now(), mailAlertState);
+  for (const a of hits) queueAlertMail(a);
+  return hits;
+}
+
+// 设置页「发送测试邮件」：不走冷却与开盘时段限制，直接发一封，返回可读结果
+async function sendTestMail() {
+  const e = store.email || DEFAULT_EMAIL;
+  if (!mailCfgReady()) {
+    return { ok: false, error: '请先填写 SMTP 服务器、账号、授权码和收件人，并勾选「启用邮件推送」' };
+  }
+  const to = String(e.to || '').split(',').map(s => s.trim()).filter(Boolean);
+  const demo = (lastQuotes || [])[0] || { symbol: 'sh000001', name: '测试邮件', price: 3000, changePct: 1.23 };
+  const pct = parseFloat(demo.changePct) || 1.23;
+  const mail = buildAlertMail({
+    name: demo.name || demo.symbol,
+    symbol: demo.symbol,
+    price: demo.price || 0,
+    changePct: pct,
+    up: pct >= 0,
+    threshold: null,
+  });
+  try {
+    await smtpSend({
+      host: e.host, port: e.port, secure: e.secure,
+      user: e.user, pass: e.pass, from: e.user, to,
+      subject: '[测试] ' + mail.subject,
+      text: '这是一封来自 Marketmonitor 的测试邮件，收到即表示配置正确。\n\n' + mail.text,
+    });
+    writeMailLog(`[${new Date().toISOString()}] OK   (测试) -> ${e.to}`);
+    return { ok: true, to: e.to };
+  } catch (err) {
+    writeMailLog(`[${new Date().toISOString()}] FAIL (测试) -> ${e.to}：${err.message}`);
+    return { ok: false, error: err.message };
+  }
+}
+
 // 首次运行不做"历史补报"：把已存在的异动标记为已提醒，避免启动瞬间弹一堆
+// （邮件通道同样要 prime，否则一开机就会收到一堆历史异动邮件）
 function primeAlertState(quotes) {
   const now = Date.now();
   for (const q of (quotes || [])) {
-    if (q && q.symbol) alertState.set(q.symbol, { ts: now, pct: parseFloat(q.changePct) || 0 });
+    if (!q || !q.symbol) continue;
+    const rec = { ts: now, pct: parseFloat(q.changePct) || 0 };
+    alertState.set(q.symbol, rec);
+    mailAlertState.set(q.symbol, { ...rec });
   }
 }
 
@@ -589,7 +1022,8 @@ function createWidgetWindow() {
     } catch (_) {}
     try { widgetWindow.webContents.send('mono-change', !!store.widget.mono); } catch (_) {}
     try { widgetWindow.webContents.send('display-mode', store.widget.displayMode || 'scroll'); } catch (_) {}
-    try { widgetWindow.webContents.send('rotation-ms', store.widget.rotationMs || 3000); } catch (_) {}
+    try { widgetWindow.webContents.send('scroll-ms', store.widget.scrollMs || 3000); } catch (_) {}
+    try { widgetWindow.webContents.send('jump-ms', store.widget.jumpMs || 3000); } catch (_) {}
 
     // 启动贴角精修：若 config 保存的位置在贴角容差内，帮用户对齐到精确像素；
     // 用户拖到中间时不打扰。两次 ready-to-show 只挂第二个监听，里面只挂一次。
@@ -703,9 +1137,18 @@ function openSettings() {
     settingsWindow.focus();
     return;
   }
+  // 默认高度 = 主屏「工作区」高度（已排除任务栏），打开设置就能一屏看全，无需手动拉大
+  let initH = 520;
+  let initY;
+  try {
+    const wa = screen.getPrimaryDisplay().workArea;
+    initH = Math.max(480, wa.height);
+    initY = wa.y;
+  } catch (_) {}
   settingsWindow = new BrowserWindow({
     width: 640,
-    height: 520,
+    height: initH,
+    ...(initY === undefined ? {} : { y: initY }),
     title: 'Marketmonitor 设置',
     resizable: true,
     webPreferences: {
@@ -756,10 +1199,16 @@ const MARKET_PREFIX = { '1': 'sh', '51': 'sz', '100': 'hk' };
 // 注意：A 股与港股的 31=涨跌 / 32=涨跌幅(%) / 33=最高 / 34=最低 位置一致，可共用一套解析。
 function parseQuotes(text, symbols) {
   const out = [];
-  // 用"请求时的代码"反查 symbol，保证与自选股列表一致（否则 symbol 会变成市场号 1/51/100）
+  // 用「市场号 + 代码」精确还原 symbol：
+  // 指数 sh000001 与个股 sz000001 的代码段都是 000001，只按代码反查会串号，
+  // 所以先用腾讯返回的市场号拼出 sh/sz/hk 前缀去请求列表里找（大小写不敏感），
+  // 找不到时再退回"按代码反查"（保持旧行为）。
+  const want = new Map();
+  for (const s of (symbols || [])) want.set(String(s).toLowerCase(), String(s));
   const byCode = new Map();
   for (const s of (symbols || [])) {
-    byCode.set(String(s).replace(/^[a-z]+/i, ''), String(s));
+    const k = String(s).replace(/^[a-z]+/i, '').toLowerCase();
+    if (!byCode.has(k)) byCode.set(k, String(s));
   }
   const regex = /=(?:"([^"]*)")/g;
   let m;
@@ -773,8 +1222,10 @@ function parseQuotes(text, symbols) {
     if (parts.length < 35) continue;
     const code = parts[2] || '';
     const mkt = MARKET_PREFIX[String(parts[0])];
+    // 市场号 + 代码 = 候选 symbol（如 1+000001 → sh000001，100+HSI → hkHSI）
+    const guess = mkt ? (mkt + code).toLowerCase() : String(code).toLowerCase();
     out.push({
-      symbol: byCode.get(code) || (mkt ? mkt + code : code),
+      symbol: want.get(guess) || byCode.get(String(code).toLowerCase()) || (mkt ? mkt + code : code),
       name: parts[1] || '',
       code,
       price: parseFloat(parts[3]) || 0,
@@ -796,13 +1247,18 @@ function parseQuotes(text, symbols) {
 let alertPrimed = false;
 
 async function tick() {
-  const symbols = (store.stocks || []).map(s => s.symbol);
+  // 自选股 + 大盘指数：指数排在自选股之后（设置页里指数是独立开关，但同屏滚动展示）
+  const symbols = [
+    ...(store.stocks || []).map(s => s.symbol),
+    ...(store.indexes || []).map(s => s.symbol),
+  ];
   const quotes = await fetchQuotes(symbols);
   if (!alertPrimed && quotes && quotes.length) {
     primeAlertState(quotes);   // 启动首帧只记录不提醒，避免历史异动补报
     alertPrimed = true;
   } else {
     checkAlerts(quotes);
+    checkEmailAlerts(quotes);   // 邮件推送：独立阈值与冷却，与上一条通道互不影响
   }
   if (widgetWindow && !widgetWindow.isDestroyed()) {
     widgetWindow.webContents.send('quotes', quotes);
@@ -830,7 +1286,8 @@ ipcMain.handle('get-widget-config', () => ({
   width: store.widget.width,
   height: store.widget.height,
   displayMode: store.widget.displayMode || 'scroll',
-  rotationMs: store.widget.rotationMs || 3000,
+  scrollMs: store.widget.scrollMs || 3000,
+  jumpMs: store.widget.jumpMs || 3000,
 }));
 
 ipcMain.handle('get-alerts-config', () => ({ ...(store.alerts || DEFAULT_ALERTS) }));
@@ -839,6 +1296,52 @@ ipcMain.handle('save-alerts-config', (_e, cfg) => {
   saveConfig();
   return { ...store.alerts };
 });
+
+// ---------- 大盘指数 ----------
+ipcMain.handle('get-indexes', () => ({
+  list: (store.indexes || []).map(s => ({ symbol: s.symbol, name: s.name || indexName(s.symbol) })),
+  presets: INDEX_PRESETS.map(x => ({ ...x })),
+}));
+ipcMain.handle('save-indexes', (_e, list) => {
+  const arr = Array.isArray(list) ? list : [];
+  const seen = new Set();
+  store.indexes = arr.map((x) => {
+    const sym = String((x && x.symbol) || x || '').trim();
+    if (!sym) return null;
+    const key = sym.toLowerCase();
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const nm = (x && x.name) || indexName(sym);
+    return { symbol: sym, name: nm };
+  }).filter(Boolean);
+  saveConfig();
+  tick();                      // 立即刷新，不用等下一个 30 秒周期
+  return store.indexes;
+});
+
+// ---------- 邮件推送 ----------
+// 注意：授权码不向渲染层回传明文（只回 hasPass），避免设置页脚本或旁观者拿到；
+// 保存时传空字符串 = 保持原值不变。
+function emailForUi() {
+  const e = { ...(store.email || DEFAULT_EMAIL) };
+  return { ...e, pass: '', hasPass: !!(store.email && store.email.pass) };
+}
+ipcMain.handle('get-email-config', () => emailForUi());
+ipcMain.handle('save-email-config', (_e, cfg) => {
+  const cur = store.email || DEFAULT_EMAIL;
+  const c = cfg || {};
+  const merged = { ...cur };
+  for (const k of ['enabled', 'host', 'port', 'secure', 'user', 'to',
+                   'followAlerts', 'thresholdUp', 'thresholdDown']) {
+    if (c[k] !== undefined) merged[k] = c[k];
+  }
+  if (typeof c.pass === 'string' && c.pass !== '') merged.pass = c.pass;
+  if (c.pass === null) merged.pass = '';           // 显式传 null = 清空授权码
+  store.email = normalizeEmail(merged);
+  saveConfig();
+  return emailForUi();
+});
+ipcMain.handle('test-email', () => sendTestMail());
 // 手动测试提醒（设置页"试一下"用）：直接用当前真实行情判定，不走冷却
 ipcMain.handle('test-alert', () => {
   const demo = (lastQuotes || []).slice(0, 1).map(q => ({
@@ -899,11 +1402,18 @@ ipcMain.handle('save-widget-config', (_e, cfg) => {
       try { widgetWindow.webContents.send('display-mode', store.widget.displayMode); } catch (_) {}
     }
   }
-  // 切换间隔
-  if (cfg.rotationMs != null) {
-    store.widget.rotationMs = Math.max(500, Math.min(60000, parseInt(cfg.rotationMs) || 3000));
+  // 滚动速率（每滚动一行耗时）与跳动间隔（每次翻页停留）：
+  // 两个独立参数，各自记忆，切换显示方式时互不覆盖
+  if (cfg.scrollMs != null) {
+    store.widget.scrollMs = Math.max(800, Math.min(15000, parseInt(cfg.scrollMs) || 3000));
     if (widgetWindow && !widgetWindow.isDestroyed()) {
-      try { widgetWindow.webContents.send('rotation-ms', store.widget.rotationMs); } catch (_) {}
+      try { widgetWindow.webContents.send('scroll-ms', store.widget.scrollMs); } catch (_) {}
+    }
+  }
+  if (cfg.jumpMs != null) {
+    store.widget.jumpMs = Math.max(1000, Math.min(20000, parseInt(cfg.jumpMs) || 3000));
+    if (widgetWindow && !widgetWindow.isDestroyed()) {
+      try { widgetWindow.webContents.send('jump-ms', store.widget.jumpMs); } catch (_) {}
     }
   }
   saveConfig();
@@ -915,7 +1425,8 @@ ipcMain.handle('save-widget-config', (_e, cfg) => {
     width: store.widget.width,
     height: store.widget.height,
     displayMode: store.widget.displayMode,
-    rotationMs: store.widget.rotationMs,
+    scrollMs: store.widget.scrollMs,
+    jumpMs: store.widget.jumpMs,
   };
 });
 
@@ -1071,6 +1582,52 @@ function createTray() {
 // 发布日期由 CI 在构建时写入 package.json 的 buildDate 字段。
 const REPO_URL = 'https://github.com/yohoky/marketmonitor';
 
+// 版本改动记录（只记 1.4.x，1.4.0 之前不收录）——设置页「关于」卡片直接渲染本数组。
+// 以后发新版只需在最前面加一条，渲染逻辑不用动。
+const CHANGELOG = [
+  {
+    v: '1.4.4', date: '2026-09-17',
+    items: [
+      '新增邮件推送：触发异动后把明细发到邮箱，阈值可单独设置（默认与异动阈值一致）',
+      '新增大盘指数监控：上证指数 / 深证成指 / 创业板指 / 沪深300 / 中证500 / 科创50 / 恒生指数，按需勾选',
+      '滚动速率与跳动间隔拆成两个参数，分别可调，互不覆盖',
+      '设置窗口高度默认铺满屏幕可用显示区（不含任务栏）',
+      '「当前监控列表」新增一键置顶，把某只快速调到最前',
+      '关于页新增本说明与各版本改动记录',
+    ],
+  },
+  {
+    v: '1.4.3', date: '2026-09-17',
+    items: [
+      '新增文字透明度调节（只淡文字，与背景透明度互不影响）',
+      '新增黑白模式：涨跌改用深浅灰，摸鱼时更不显眼',
+    ],
+  },
+  {
+    v: '1.4.2', date: '2026-09-17',
+    items: [
+      '设置页版本号不再写死，改为与安装包版本一致',
+      '支持港股代码录入：00981 / hk981（位数自动补零）',
+      '关于页显示版本号与发布日期',
+    ],
+  },
+  {
+    v: '1.4.1', date: '2026-09-16',
+    items: [
+      '修复 1.4.0 打开后窗口空白（任务栏有预览、桌面看不到）',
+      '支持港股交易时段：09:00–12:00 / 13:00–16:00',
+      '休市时段不再推送 0.00% 的无效异动提醒',
+    ],
+  },
+  {
+    v: '1.4.0', date: '2026-09-16',
+    items: [
+      '透明悬浮行情窗，支持拖动与九宫格归位',
+      'A股 / 基金 / 可转债 / 港股 多品种同屏，滚动与跳动两种切换方式',
+    ],
+  },
+];
+
 function readBuildDate() {
   const inline = (() => { try { return require('./package.json').buildDate; } catch (_) { return null; } })();
   if (inline) return String(inline);
@@ -1095,6 +1652,7 @@ function getAppInfo() {
     buildDate: readBuildDate(),
     electron: (process.versions && process.versions.electron) || '',
     repo: REPO_URL,
+    changelog: CHANGELOG,
   };
 }
 

@@ -1,9 +1,9 @@
 {
   "name": "marketmonitor",
   "productName": "Marketmonitor",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "buildDate": "2026-09-17",
-  "description": "Windows 悬浮行情小组件（A股/基金/可转债/港股）：多股同屏/滚动跳动切换 + 名称自动补全 + 异动提醒 + 背景/文字透明度分别可调 + 黑白摸鱼模式",
+  "description": "Windows 悬浮行情小组件（A股/基金/可转债/港股/大盘指数）：多股同屏 + 滚动/跳动切换 + 名称自动补全 + 异动提醒（系统通知/提示音/邮件推送）+ 背景与文字透明度分别可调 + 黑白摸鱼模式",
   "main": "main.js",
   "author": "yohoky",
   "license": "MIT",

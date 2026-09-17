@@ -548,3 +548,76 @@ textarea {
   transition: background .14s ease, border-color .14s ease;
 }
 .btn-mini:hover { background: var(--primary-soft); border-color: var(--primary-2); color: var(--primary); }
+
+/* ============================================================
+   v1.4.4 新增：大盘指数勾选区 / 关于页版本改动记录
+   ============================================================ */
+
+/* 大盘指数：勾选网格 */
+.idx-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(152px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.idx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfcfe;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease, color .16s ease;
+  font-size: 13px;
+  color: var(--text-2);
+  user-select: none;
+}
+.idx-item:hover { border-color: var(--border-strong); background: #fff; }
+.idx-item.on {
+  border-color: #bcd0ff;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+.idx-item input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--primary);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.idx-item .idx-sym {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 关于页：版本改动记录 */
+.cl-title {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-strong);
+  font-weight: 600;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.changelog {
+  margin-top: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+.changelog::-webkit-scrollbar { width: 6px; }
+.changelog::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+.cl-item { padding: 8px 0 10px; border-bottom: 1px dashed var(--border); }
+.cl-item:last-child { border-bottom: none; }
+.cl-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.cl-head b { color: var(--primary); font-size: 13px; }
+.cl-head span { font-size: 11px; color: var(--muted); }
+.cl-list { margin: 0; padding-left: 18px; }
+.cl-list li { font-size: 12px; color: var(--text-2); line-height: 1.6; }
+.cl-empty { font-size: 12px; color: var(--muted); padding: 4px 0; }

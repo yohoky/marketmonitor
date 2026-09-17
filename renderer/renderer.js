@@ -6,7 +6,8 @@ const FALLBACK_ROW_H = 25;  // 单行高度兜底（实际以 DOM 测量为准�
 
 let quotes = [];
 let displayMode = 'scroll'; // scroll 滚动 / jump 跳动
-let rotationMs = 3000;
+let scrollMs = 3000;        // 滚动模式：每滚动一行耗时(ms)，越小滚得越快
+let jumpMs = 3000;          // 跳动模式：每次翻页停留(ms)
 let visibleRows = 2;
 let jumpOffset = 0;         // jump 模式：当前起始索引
 let scrollY = 0;            // scroll 模式：当前 translateY
@@ -46,18 +47,34 @@ window.stockApi?.getWidgetConfig?.().then(c => {
   if (c.textOpacity != null) applyTextOp(c.textOpacity);
   if (c.mono != null) applyMono(c.mono);
   if (c.displayMode) setDisplayMode(c.displayMode);
-  if (c.rotationMs) setRotationMs(c.rotationMs);
+  if (c.scrollMs) setScrollMs(c.scrollMs);
+  if (c.jumpMs) setJumpMs(c.jumpMs);
 }).catch(() => {});
 
 window.stockApi?.onDisplayMode?.((m) => setDisplayMode(m));
-window.stockApi?.onRotationMs?.((ms) => setRotationMs(ms));
+window.stockApi?.onScrollMs?.((ms) => setScrollMs(ms));
+window.stockApi?.onJumpMs?.((ms) => setJumpMs(ms));
+window.stockApi?.onRotationMs?.((ms) => setRotationMs(ms));   // 旧版兼容：一个值管两种模式
 
 function setDisplayMode(m) {
   displayMode = (m === 'jump') ? 'jump' : 'scroll';
   restart();
 }
+// 滚动速率：每滚动一行耗时，越小越快。只在滚动模式下重启动画，避免影响跳动模式
+function setScrollMs(ms) {
+  scrollMs = Math.max(800, Math.min(15000, parseInt(ms) || 3000));
+  if (displayMode === 'scroll') restart();
+}
+// 跳动间隔：每次翻页停留时间。只在跳动模式下重启动画
+function setJumpMs(ms) {
+  jumpMs = Math.max(1000, Math.min(20000, parseInt(ms) || 3000));
+  if (displayMode === 'jump') restart();
+}
+// 旧版 rotation-ms：同时设置两者
 function setRotationMs(ms) {
-  rotationMs = Math.max(500, Math.min(60000, parseInt(ms) || 3000));
+  const v = Math.max(500, Math.min(60000, parseInt(ms) || 3000));
+  scrollMs = v;
+  jumpMs = v;
   restart();
 }
 
@@ -131,7 +148,7 @@ function startJump() {
     jumpOffset = (jumpOffset + visibleRows) % total;
     const rh = rowHeight();
     applyTransform(-jumpOffset * (rh + GAP));
-  }, rotationMs);
+  }, jumpMs);
 }
 
 function stopJump() {
@@ -145,8 +162,8 @@ function startScroll() {
   const rh = rowHeight();
   const oneSet = total * (rh + GAP);
   if (total <= visibleRows || oneSet <= 0) { scrollY = 0; applyTransform(0); return; }
-  // 速度：每 rotationMs 滚动一行的高度
-  const speed = (rh + GAP) / (rotationMs / 1000);   // px / 秒
+  // 速度：每 scrollMs 滚动一行的高度（数值越小滚得越快）
+  const speed = (rh + GAP) / (scrollMs / 1000);   // px / 秒
   lastTs = 0;
   const step = (ts) => {
     if (!lastTs) lastTs = ts;

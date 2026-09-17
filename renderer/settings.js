@@ -69,6 +69,7 @@ function renderList() {
       <div class="s-price">${q ? q.price.toFixed(2) : '--'}</div>
       <div class="s-pct ${cls}">${q ? `${sign}${pct.toFixed(2)}%` : '--'}</div>
       <div class="s-sort">
+        <button class="s-top" data-idx="${idx}" title="一键置顶（移到最前）" ${idx === 0 ? 'disabled' : ''}>⇧</button>
         <button class="s-up" data-idx="${idx}" title="上移" ${idx === 0 ? 'disabled' : ''}>↑</button>
         <button class="s-down" data-idx="${idx}" title="下移" ${idx === stocks.length - 1 ? 'disabled' : ''}>↓</button>
       </div>
@@ -82,6 +83,17 @@ function renderList() {
     btn.addEventListener('click', async (e) => {
       const idx = +e.currentTarget.dataset.idx;
       stocks.splice(idx, 1);
+      await window.stockApi.saveStocks(stocks);
+      renderList();
+    });
+  });
+  // 一键置顶：把该条移到列表最前，其余保持原有相对顺序
+  listEl.querySelectorAll('.s-top').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      const i = +e.currentTarget.dataset.idx;
+      if (i <= 0) return;
+      const [item] = stocks.splice(i, 1);
+      stocks.unshift(item);
       await window.stockApi.saveStocks(stocks);
       renderList();
     });
@@ -367,6 +379,11 @@ const displayModeSel = document.getElementById('display-mode');
 const textOpacitySlider = document.getElementById('text-opacity-slider');
 const textOpacityVal = document.getElementById('text-opacity-val');
 const monoChk = document.getElementById('mono-chk');
+// 滚动速率 / 跳动间隔：v1.4.4 起由原来的单一 rotationMs 拆成两个独立参数
+const scrollSpeedSlider = document.getElementById('scroll-speed-slider');
+const scrollSpeedVal = document.getElementById('scroll-speed-val');
+const jumpIntervalSlider = document.getElementById('jump-interval-slider');
+const jumpIntervalVal = document.getElementById('jump-interval-val');
 
 let widgetCfg = null;   // 缓存 widget 配置 {opacity, topMost, width, height}
 
@@ -394,6 +411,145 @@ async function loadWidgetCfg() {
   if (widthInput) widthInput.value = widgetCfg.width || 220;
   if (heightInput) heightInput.value = widgetCfg.height || 84;
   if (displayModeSel) displayModeSel.value = widgetCfg.displayMode || 'scroll';
+  if (scrollSpeedSlider) {
+    const v = widgetCfg.scrollMs || 3000;
+    scrollSpeedSlider.value = v;
+    scrollSpeedVal.textContent = (Number(v) / 1000).toFixed(1) + 's/行';
+  }
+  if (jumpIntervalSlider) {
+    const v = widgetCfg.jumpMs || 3000;
+    jumpIntervalSlider.value = v;
+    jumpIntervalVal.textContent = (Number(v) / 1000).toFixed(1) + 's/页';
+  }
+}
+
+// ---------- 大盘指数 ----------
+const idxGrid = document.getElementById('idx-grid');
+const indexCount = document.getElementById('index-count');
+let indexPresets = [];
+let indexList = [];      // 已勾选：[{symbol, name}]
+
+function idxNameOf(sym) {
+  const key = String(sym).toLowerCase();
+  const hit = indexPresets.find(p => p.symbol.toLowerCase() === key);
+  return hit ? hit.name : sym;
+}
+
+function renderIdxGrid() {
+  if (!idxGrid) return;
+  const onMap = new Map(indexList.map(x => [String(x.symbol).toLowerCase(), x]));
+  // 预设 + 配置里出现过的额外代码（保证手写在 config.ini 里的指数不丢）
+  const all = indexPresets.slice();
+  for (const x of indexList) {
+    if (!all.some(p => p.symbol.toLowerCase() === String(x.symbol).toLowerCase())) all.push(x);
+  }
+  idxGrid.innerHTML = '';
+  all.forEach((p) => {
+    const key = String(p.symbol).toLowerCase();
+    const on = onMap.has(key);
+    const label = document.createElement('label');
+    label.className = 'idx-item' + (on ? ' on' : '');
+    label.innerHTML = `
+      <input type="checkbox"${on ? ' checked' : ''} />
+      <span>${(onMap.get(key) && onMap.get(key).name) || p.name || idxNameOf(p.symbol)}</span>
+      <span class="idx-sym">${p.symbol}</span>
+    `;
+    label.querySelector('input').addEventListener('change', async (e) => {
+      if (e.target.checked) {
+        if (!indexList.some(x => String(x.symbol).toLowerCase() === key)) {
+          indexList.push({ symbol: p.symbol, name: idxNameOf(p.symbol) });
+        }
+      } else {
+        indexList = indexList.filter(x => String(x.symbol).toLowerCase() !== key);
+      }
+      await saveIdx();
+    });
+    idxGrid.appendChild(label);
+  });
+  if (indexCount) indexCount.textContent = indexList.length;
+}
+
+async function saveIdx() {
+  try {
+    const saved = await window.stockApi.saveIndexes(indexList);
+    if (Array.isArray(saved)) indexList = saved;
+  } catch (e) { console.error('saveIndexes 失败', e); }
+  renderIdxGrid();
+}
+
+async function loadIdx() {
+  try {
+    const r = await window.stockApi.getIndexes();
+    indexPresets = (r && r.presets) || [];
+    indexList = (r && r.list) || [];
+  } catch (e) { console.error('getIndexes 失败', e); }
+  renderIdxGrid();
+}
+
+// ---------- 邮件推送 ----------
+const emailEnabled = document.getElementById('email-enabled');
+const emailHost = document.getElementById('email-host');
+const emailPort = document.getElementById('email-port');
+const emailSecure = document.getElementById('email-secure');
+const emailUser = document.getElementById('email-user');
+const emailPass = document.getElementById('email-pass');
+const emailPassHint = document.getElementById('email-pass-hint');
+const emailTo = document.getElementById('email-to');
+const emailFollow = document.getElementById('email-follow');
+const emailThUp = document.getElementById('email-threshold-up');
+const emailThDown = document.getElementById('email-threshold-down');
+const emailTestBtn = document.getElementById('email-test');
+const emailTestResult = document.getElementById('email-test-result');
+let emailCfg = {};
+
+// 跟随异动阈值时，独立阈值输入框置灰并回显当前异动阈值
+function syncEmailThresholdUI() {
+  const follow = !emailFollow || emailFollow.checked;
+  const up = (alertsCfg && alertsCfg.thresholdUp != null) ? alertsCfg.thresholdUp : 3.9;
+  const down = (alertsCfg && alertsCfg.thresholdDown != null) ? alertsCfg.thresholdDown : 3.9;
+  if (emailThUp) {
+    emailThUp.disabled = follow;
+    if (follow) emailThUp.value = up;
+  }
+  if (emailThDown) {
+    emailThDown.disabled = follow;
+    if (follow) emailThDown.value = down;
+  }
+}
+
+async function loadEmailCfg() {
+  try {
+    const c = await window.stockApi.getEmailConfig();
+    if (c) emailCfg = c;
+  } catch (e) { console.error('getEmailConfig 失败', e); }
+  if (emailEnabled) emailEnabled.checked = !!emailCfg.enabled;
+  if (emailHost) emailHost.value = emailCfg.host || '';
+  if (emailPort) emailPort.value = emailCfg.port || 465;
+  if (emailSecure) emailSecure.checked = emailCfg.secure !== false;
+  if (emailUser) emailUser.value = emailCfg.user || '';
+  if (emailTo) emailTo.value = emailCfg.to || '';
+  if (emailFollow) emailFollow.checked = emailCfg.followAlerts !== false;
+  if (emailThUp) emailThUp.value = emailCfg.thresholdUp ?? 3.9;
+  if (emailThDown) emailThDown.value = emailCfg.thresholdDown ?? 3.9;
+  if (emailPass) emailPass.value = '';
+  if (emailPassHint) {
+    emailPassHint.textContent = emailCfg.hasPass ? '已保存授权码（留空则不修改）' : '尚未设置授权码';
+    emailPassHint.style.color = emailCfg.hasPass ? '#16a34a' : '#94a3b8';
+  }
+  syncEmailThresholdUI();
+}
+
+async function saveEmailCfg(patch) {
+  try {
+    const r = await window.stockApi.saveEmailConfig({ ...(emailCfg || {}), ...patch });
+    if (r) {
+      emailCfg = r;
+      if (emailPassHint) {
+        emailPassHint.textContent = r.hasPass ? '已保存授权码（留空则不修改）' : '尚未设置授权码';
+        emailPassHint.style.color = r.hasPass ? '#16a34a' : '#94a3b8';
+      }
+    }
+  } catch (e) { console.error('saveEmailConfig 失败', e); }
 }
 
 // ---------- 异动提醒配置 ----------
@@ -540,6 +696,22 @@ displayModeSel?.addEventListener('change', async () => {
   widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), displayMode: displayModeSel.value });
 });
 
+// 滚动速率 / 跳动间隔：拖动时只更新文字（顺滑），松手才落库并下发给小组件
+scrollSpeedSlider?.addEventListener('input', () => {
+  scrollSpeedVal.textContent = (parseInt(scrollSpeedSlider.value, 10) / 1000).toFixed(1) + 's/行';
+});
+scrollSpeedSlider?.addEventListener('change', async () => {
+  const v = parseInt(scrollSpeedSlider.value, 10);
+  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), scrollMs: v });
+});
+jumpIntervalSlider?.addEventListener('input', () => {
+  jumpIntervalVal.textContent = (parseInt(jumpIntervalSlider.value, 10) / 1000).toFixed(1) + 's/页';
+});
+jumpIntervalSlider?.addEventListener('change', async () => {
+  const v = parseInt(jumpIntervalSlider.value, 10);
+  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), jumpMs: v });
+});
+
 // ---------- 屏幕位置：九宫格归位 ----------
 const posGrid = document.getElementById('pos-grid');
 const posReadout = document.getElementById('pos-readout');
@@ -594,14 +766,53 @@ function readThreshold(el, fallback) {
   el.value = v;
   return v;
 }
-alertThresholdUp?.addEventListener('change', () => {
-  saveAlertsCfg({ thresholdUp: readThreshold(alertThresholdUp, 3.9) });
+alertThresholdUp?.addEventListener('change', async () => {
+  await saveAlertsCfg({ thresholdUp: readThreshold(alertThresholdUp, 3.9) });
+  syncEmailThresholdUI();       // 邮件阈值若跟随异动，这里同步回显
 });
-alertThresholdDown?.addEventListener('change', () => {
-  saveAlertsCfg({ thresholdDown: readThreshold(alertThresholdDown, 3.9) });
+alertThresholdDown?.addEventListener('change', async () => {
+  await saveAlertsCfg({ thresholdDown: readThreshold(alertThresholdDown, 3.9) });
+  syncEmailThresholdUI();
 });
 document.getElementById('alert-test')?.addEventListener('click', async () => {
   try { await window.stockApi.testAlert(); } catch (_) {}
+});
+
+// ---------- 邮件推送事件 ----------
+emailEnabled?.addEventListener('change', () => saveEmailCfg({ enabled: emailEnabled.checked }));
+emailHost?.addEventListener('change', () => saveEmailCfg({ host: emailHost.value.trim() }));
+emailPort?.addEventListener('change', () => saveEmailCfg({ port: parseInt(emailPort.value, 10) || 465 }));
+emailSecure?.addEventListener('change', () => saveEmailCfg({ secure: emailSecure.checked }));
+emailUser?.addEventListener('change', () => saveEmailCfg({ user: emailUser.value.trim() }));
+// 授权码：留空表示"不修改"，填了才覆盖；保存后立即清空输入框（不回显明文）
+emailPass?.addEventListener('change', async () => {
+  const v = emailPass.value;
+  if (v === '') return;
+  await saveEmailCfg({ pass: v });
+  emailPass.value = '';
+});
+emailTo?.addEventListener('change', () => saveEmailCfg({ to: emailTo.value.trim() }));
+emailFollow?.addEventListener('change', () => {
+  syncEmailThresholdUI();
+  saveEmailCfg({ followAlerts: emailFollow.checked });
+});
+emailThUp?.addEventListener('change', () => saveEmailCfg({ thresholdUp: readThreshold(emailThUp, 3.9) }));
+emailThDown?.addEventListener('change', () => saveEmailCfg({ thresholdDown: readThreshold(emailThDown, 3.9) }));
+emailTestBtn?.addEventListener('click', async () => {
+  if (emailTestResult) { emailTestResult.textContent = '发送中…'; emailTestResult.style.color = '#94a3b8'; }
+  try {
+    const r = await window.stockApi.testEmail();
+    if (r && r.ok) {
+      emailTestResult.textContent = `已发送到 ${r.to}，请查收（注意垃圾箱）`;
+      emailTestResult.style.color = '#16a34a';
+    } else {
+      emailTestResult.textContent = '失败：' + ((r && r.error) || '未知错误');
+      emailTestResult.style.color = '#ef4444';
+    }
+  } catch (e) {
+    emailTestResult.textContent = '失败：' + e.message;
+    emailTestResult.style.color = '#ef4444';
+  }
 });
 
 // ---------- 事件 ----------
@@ -666,12 +877,31 @@ symbolInput.addEventListener('focus', () => {
   }
 });
 
+// ---------- 关于页：版本改动记录 ----------
+// 数据来自主进程的 CHANGELOG 常量（只记 1.4.x），已是最新在前，直接渲染即可
+function renderChangelog(list) {
+  const box = document.getElementById('about-changelog');
+  if (!box) return;
+  if (!Array.isArray(list) || list.length === 0) {
+    box.innerHTML = '<div class="cl-empty">暂无记录</div>';
+    return;
+  }
+  box.innerHTML = list.map((it) => `
+    <div class="cl-item">
+      <div class="cl-head"><b>v${String(it.v || '').replace(/^v/i, '')}</b><span>${it.date || ''}</span></div>
+      <ul class="cl-list">${(it.items || []).map(x => `<li>${x}</li>`).join('')}</ul>
+    </div>
+  `).join('');
+}
+
 // ---------- 初始化 ----------
 (async function init() {
   stocks = await window.stockApi.getStocks();
   renderList();
-  await loadWidgetCfg();   // 载入透明度/置顶/尺寸/切换方式当前值
-  await loadAlertsCfg();   // 载入异动提醒配置
+  await loadWidgetCfg();   // 载入透明度 / 置顶 / 尺寸 / 切换方式 / 滚动速率 / 跳动间隔
+  await loadAlertsCfg();   // 载入异动提醒配置（邮件阈值回显依赖它，必须排在前面）
+  await loadEmailCfg();    // 载入邮件推送配置
+  await loadIdx();         // 载入大盘指数勾选状态
 
   // 版本号 / 发布日期：与"帮助 → 关于"同源，取自打包后的 package.json（不会和安装包对不上）
   try {
@@ -685,6 +915,7 @@ symbolInput.addEventListener('focus', () => {
       const bd = document.getElementById('about-builddate');
       if (bd) bd.textContent = info.buildDate || '—';
     }
+    renderChangelog(info && info.changelog);
   } catch (_) {}
 
   // 初次拉一次行情（拿到名称后顺带补全列表里的名称）

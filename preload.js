@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld('stockApi', {
   onTextOpacity: (cb) => ipcRenderer.on('text-opacity-change', (_e, v) => cb(v)),
   onMono: (cb) => ipcRenderer.on('mono-change', (_e, on) => cb(on)),
   onDisplayMode: (cb) => ipcRenderer.on('display-mode', (_e, m) => cb(m)),
+  onScrollMs: (cb) => ipcRenderer.on('scroll-ms', (_e, ms) => cb(ms)),
+  onJumpMs: (cb) => ipcRenderer.on('jump-ms', (_e, ms) => cb(ms)),
+  // 旧版兼容：rotation-ms 收到后同时作用于两种模式
   onRotationMs: (cb) => ipcRenderer.on('rotation-ms', (_e, ms) => cb(ms)),
   // 屏幕位置（九宫格锚点归位）
   setWidgetPosition: (anchor) => ipcRenderer.invoke('set-widget-position', anchor),
@@ -33,6 +36,13 @@ contextBridge.exposeInMainWorld('stockApi', {
   getAlertsConfig: () => ipcRenderer.invoke('get-alerts-config'),
   saveAlertsConfig: (cfg) => ipcRenderer.invoke('save-alerts-config', cfg),
   testAlert: () => ipcRenderer.invoke('test-alert'),
+  // 大盘指数
+  getIndexes: () => ipcRenderer.invoke('get-indexes'),
+  saveIndexes: (list) => ipcRenderer.invoke('save-indexes', list),
+  // 邮件推送（授权码不回传明文，只回 hasPass）
+  getEmailConfig: () => ipcRenderer.invoke('get-email-config'),
+  saveEmailConfig: (cfg) => ipcRenderer.invoke('save-email-config', cfg),
+  testEmail: () => ipcRenderer.invoke('test-email'),
   // 版本信息（关于页显示版本号 + 发布日期）
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
   openRepo: () => ipcRenderer.invoke('open-repo'),

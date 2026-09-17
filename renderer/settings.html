@@ -13,14 +13,14 @@
         <h1 data-page-node-id="Ui95GPQOlEMDTA1OLNyyxR">Marketmonitor 设置</h1>
         <p class="sub">添加或批量粘贴 股票 / 基金 / 可转债 / 港股 代码，名称自动补全，保存后小组件立即生效</p>
       </div>
-      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）" data-page-node-id="eoNFQWZuFvU6k6DCqusIQR">v1.4.2</span>
+      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）" data-page-node-id="eoNFQWZuFvU6k6DCqusIQR">v1.4.4</span>
     </header>
 
     <section class="card" data-page-node-id="eTqzjpdmK5qPVil5MmETzP">
       <div class="card-title" data-page-node-id="aCz1VmnnnuB0ZSKI6L7dP1"><span class="bar" data-page-node-id="IOX0CaBfxDJI7kZ9Sy39aa"></span>当前监控列表 <span class="badge" id="count" data-page-node-id="wCoCOlIlH7mjAn6PjYrvjs">0</span></div>
       <ul id="stock-list" class="stock-list" data-page-node-id="hldmfEGWcQuMyWgvOLtDF3"></ul>
       <div class="empty" id="empty" data-page-node-id="TskmSEV0xpM2URasfH7bWJ">尚未添加股票，先在下方输入框中添加</div>
-      <div class="card-desc" style="margin-top:6px" data-page-node-id="AfVWAXFZE87wA6Pe7yhr3A">↑ ↓ 调整顺序（小组件按此顺序滚动展示）</div>
+      <div class="card-desc" style="margin-top:6px" data-page-node-id="AfVWAXFZE87wA6Pe7yhr3A">↑ ↓ 调整顺序 · ⇧ 一键置顶（小组件按此顺序滚动展示）</div>
     </section>
 
     <section class="card" data-page-node-id="XWFOIl0Evgn1xtjaC3bHiP">
@@ -83,6 +83,20 @@
         </label>
         <span class="card-desc" data-page-node-id="KOuEU0S8Ox62grAm3nGAW3">股票数 ≤ 可显示行数时不切换，全部同屏显示</span>
       </div>
+      <div class="opacity-row" style="margin-top:8px">
+        <label>滚动速率
+          <input type="range" id="scroll-speed-slider" min="800" max="15000" step="200" />
+          <span id="scroll-speed-val" class="opacity-val">3.0s/行</span>
+        </label>
+        <span class="card-desc">每滚动一行消耗的时间，<b>数值越小滚得越快</b>（仅滚动模式生效）</span>
+      </div>
+      <div class="opacity-row" style="margin-top:8px">
+        <label>跳动间隔
+          <input type="range" id="jump-interval-slider" min="1000" max="20000" step="500" />
+          <span id="jump-interval-val" class="opacity-val">3.0s/页</span>
+        </label>
+        <span class="card-desc">每翻一页停留多久（仅跳动模式生效）</span>
+      </div>
       <div class="row-ctrl" style="margin-top:8px" data-page-node-id="gTinggRwIWp23ScLfpLOYo">
         <label class="chk-label" data-page-node-id="OzUC6bfd9EmSOSdaeDQCjJ">
           <input type="checkbox" id="topmost-chk" data-page-node-id="9pEuJ7YthrYm1L6p5mAHAA" /> 窗口置顶
@@ -111,6 +125,12 @@
           <button type="button" class="btn-mini" id="pos-default">回到右下角</button>
         </div>
       </div>
+    </section>
+
+    <section class="card" id="index-card">
+      <div class="card-title"><span class="bar"></span>大盘指数 <span class="badge" id="index-count">0</span></div>
+      <div class="card-desc">勾选即加入小组件，显示在自选股之后；同样参与滚动 / 跳动与异动提醒（含邮件推送）。</div>
+      <div class="idx-grid" id="idx-grid"></div>
     </section>
 
     <section class="card" data-page-node-id="uHxeHeDvmbLRxRysQr7QK8">
@@ -172,16 +192,74 @@
       </div>
     </section>
 
-    <section class="card" id="about-card">
-      <div class="card-title"><span class="bar"></span>关于 <span class="badge" id="about-ver">v1.4.2</span></div>
+    <section class="card" id="email-card">
+      <div class="card-title"><span class="bar"></span>邮件推送</div>
+      <div class="row-ctrl" style="margin-bottom:8px">
+        <label class="chk-label"><input type="checkbox" id="email-enabled" /> 启用邮件推送</label>
+        <button id="email-test" class="btn ghost">发送测试邮件</button>
+        <span id="email-test-result" class="card-desc"></span>
+      </div>
       <div class="size-row">
-        <span class="card-desc" style="flex:0 0 auto;min-width:170px">版本号　<b id="about-version">v1.4.2</b></span>
+        <label class="size-label">SMTP 服务器
+          <input type="text" id="email-host" placeholder="smtp.qq.com" style="width:160px" autocomplete="off" />
+        </label>
+        <label class="size-label">端口
+          <input type="number" id="email-port" min="1" max="65535" style="width:78px" />
+        </label>
+        <label class="chk-label" style="flex:0 0 auto">
+          <input type="checkbox" id="email-secure" /> SSL 直连
+        </label>
+        <span class="card-desc">465 勾选；587 / 25 不勾选（会自动 STARTTLS 加密）</span>
+      </div>
+      <div class="size-row" style="margin-top:8px">
+        <label class="size-label">发件邮箱
+          <input type="text" id="email-user" placeholder="you@qq.com" style="width:180px" autocomplete="off" />
+        </label>
+        <label class="size-label">授权码
+          <input type="password" id="email-pass" placeholder="留空表示不修改" style="width:150px" autocomplete="new-password" />
+        </label>
+        <span class="card-desc" id="email-pass-hint"></span>
+      </div>
+      <div class="size-row" style="margin-top:8px">
+        <label class="size-label" style="flex:1 1 auto">收件邮箱
+          <input type="text" id="email-to" placeholder="多个用英文逗号分隔，如 a@qq.com,b@163.com" style="width:100%" autocomplete="off" />
+        </label>
+      </div>
+      <div class="size-row" style="margin-top:8px">
+        <label class="chk-label" style="flex:0 0 auto;min-width:186px">
+          <input type="checkbox" id="email-follow" checked /> 阈值跟随异动提醒
+        </label>
+        <label class="size-label">涨 ≥
+          <input type="number" id="email-threshold-up" min="0.1" max="50" step="0.1" style="width:80px" />
+        </label>
+        <label class="size-label">跌 ≥
+          <input type="number" id="email-threshold-down" min="0.1" max="50" step="0.1" style="width:80px" />
+        </label>
+        <span class="card-desc">% 才发邮件</span>
+      </div>
+      <div class="card-desc" style="margin-top:6px">
+        阈值默认与异动提醒一致；取消勾选后可单独设置（例如异动 3.9% 就提醒，邮件只在 6% 才发）。<br/>
+        <b>授权码不是登录密码</b>：QQ / 163 邮箱需先到邮箱「设置 → 账户」开启 SMTP 服务并生成授权码。<br/>
+        触发后异步发信，不影响行情刷新；发送记录见程序目录 <b>maillog.txt</b>，失败详情见 <b>error.log</b>。
+      </div>
+    </section>
+
+    <section class="card" id="about-card">
+      <div class="card-title"><span class="bar"></span>关于 <span class="badge" id="about-ver">v1.4.4</span></div>
+      <div class="size-row">
+        <span class="card-desc" style="flex:0 0 auto;min-width:170px">版本号　<b id="about-version">v1.4.4</b></span>
         <span class="card-desc">发布日期　<b id="about-builddate">—</b></span>
       </div>
       <div class="card-desc" style="margin-top:6px">
-        A股 / 基金 / 可转债 / 港股 桌面悬浮行情小组件。行情数据：腾讯财经；代码搜索：东方财富。<br/>
-        帮助菜单 →「关于 Marketmonitor」可随时查看版本号与发布日期。仓库：
+        <b>Marketmonitor</b> 是一款 Windows 桌面悬浮行情小组件：A股 / 基金 / 可转债 / 港股 / 大盘指数
+        同屏展示，支持滚动与整屏跳动、异动提醒（系统通知 + 提示音 + 邮件推送）、
+        背景与文字透明度分别可调、黑白摸鱼模式、九宫格一键归位。<br/>
+        行情数据：腾讯财经；代码搜索：东方财富。帮助菜单 →「关于 Marketmonitor」可查看版本号与发布日期。仓库：
         <span id="about-repo" style="color:#2f6feb;cursor:pointer;text-decoration:underline">github.com/yohoky/marketmonitor</span>
+      </div>
+      <div class="cl-title">版本改动记录</div>
+      <div id="about-changelog" class="changelog">
+        <div class="cl-empty">加载中…</div>
       </div>
     </section>
 
