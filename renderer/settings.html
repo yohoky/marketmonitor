@@ -1,88 +1,68 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <title>Marketmonitor 设置</title>
-  <link rel="stylesheet" href="settings.css" />
+<html lang="zh-CN" data-page-node-id="m2UcDPhoIbs9b1l4YK4lyN">
+<head data-page-node-id="N6FTBhn8t9zRmnA3Fc4yQ7">
+  <meta charset="UTF-8" data-page-node-id="fLJiCFzbG1JyoadMISN5Vi" />
+  <title>股票监控设置</title>
+  <link rel="stylesheet" href="settings.css" data-page-node-id="HsopC5O8CislVCGUVwmGtF" />
 </head>
-<body>
-  <div class="wrap">
-    <header class="head">
-      <span class="logo">📈</span>
-      <div class="head-text">
-        <h1>Marketmonitor 设置</h1>
-        <p class="sub">每个「监控列表」是一个独立的悬浮小窗口，可分别监控自选股 / 大盘指数 / 基金等，互不干扰</p>
+<body data-page-node-id="Bp1AdscNmJnkuteLmELZOA">
+  <div class="wrap" data-page-node-id="rHe6reNntnDNCDXkT2eTbx">
+    <header class="head" data-page-node-id="xblDHzyB9mdgOpa4wPgabU">
+      <span class="logo" data-page-node-id="7ZOlTBYM0Fk5BP1B7nwIYQ">📈</span>
+      <div class="head-text" data-page-node-id="N9Sam92E5BN2Ppk4qCrpn6">
+        <h1 data-page-node-id="Ui95GPQOlEMDTA1OLNyyxR">Marketmonitor 设置</h1>
+        <p class="sub">添加或批量粘贴 股票 / 基金 / 可转债 / 港股 代码，名称自动补全，保存后小组件立即生效</p>
       </div>
-      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）">v1.5.0</span>
+      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）" data-page-node-id="eoNFQWZuFvU6k6DCqusIQR">v1.4.5</span>
     </header>
 
-    <!-- ============ 列表切换 ============ -->
-    <div class="tabs-bar">
-      <div class="tabs" id="list-tabs"></div>
-      <button type="button" class="btn ghost btn-sm" id="new-list-btn">+ 新建列表</button>
-    </div>
+    <section class="card" data-page-node-id="eTqzjpdmK5qPVil5MmETzP">
+      <div class="card-title" data-page-node-id="aCz1VmnnnuB0ZSKI6L7dP1"><span class="bar" data-page-node-id="IOX0CaBfxDJI7kZ9Sy39aa"></span>当前监控列表 <span class="badge" id="count" data-page-node-id="wCoCOlIlH7mjAn6PjYrvjs">0</span></div>
+      <ul id="stock-list" class="stock-list" data-page-node-id="hldmfEGWcQuMyWgvOLtDF3"></ul>
+      <div class="empty" id="empty" data-page-node-id="TskmSEV0xpM2URasfH7bWJ">尚未添加股票，先在下方输入框中添加</div>
+      <div class="card-desc" style="margin-top:6px" data-page-node-id="AfVWAXFZE87wA6Pe7yhr3A">↑ ↓ 调整顺序 · ⇧ 一键置顶（小组件按此顺序滚动展示）</div>
+    </section>
 
-    <section class="card">
-      <div class="card-title"><span class="bar"></span>当前列表</div>
-      <div class="size-row">
-        <label class="size-label" style="flex:1 1 220px">名称
-          <input type="text" id="list-name" placeholder="例如：自选股 / 大盘指数 / 基金" style="width:100%" autocomplete="off" />
-        </label>
-        <label class="chk-label" style="flex:0 0 auto">
-          <input type="checkbox" id="list-visible" /> 启动时显示
-        </label>
-        <button type="button" class="btn ghost btn-sm" id="list-delete">删除此列表</button>
+    <section class="card" data-page-node-id="XWFOIl0Evgn1xtjaC3bHiP">
+      <div class="card-title" data-page-node-id="UzlHcKREy9alCqqEbiAndE"><span class="bar" data-page-node-id="3ZFG4XIjnBLDKbAC3Gtm2W"></span>快速添加</div>
+      <div class="row-ctrl" data-page-node-id="qwAfEHMJRcNpiqU890STa8">
+        <input id="symbol-input" placeholder="代码 600519 / 00981 / hk00981，或拼音缩写 gzmt/zxgj，回车添加" autocomplete="off" data-page-node-id="jlPb0CLZAJFuYRP0IZDhkW" />
+        <button id="add-btn" class="btn primary" data-page-node-id="hUIGTkyXtByzypVkNCgGub">添加</button>
       </div>
-      <div class="card-desc" style="margin-top:6px" id="list-hint"></div>
+      <div id="candidate-list" class="candidate-list" style="display:none" data-page-node-id="ogpyCUgIVGajIKWmRg8KCQ"></div>
+      <div class="card-desc" style="margin-top:6px" data-page-node-id="M44fPi7jV27fs2B6ibyyYy">支持：A股 / 基金 / 可转债 6 位代码（sh/sz 自动补齐）· 港股 5 位代码 <b>00981</b> 或 <b>hk00981</b> · 拼音首字母（gzmt=贵州茅台，zxgj=中芯国际，可带出港股候选）</div>
     </section>
 
-    <section class="card">
-      <div class="card-title"><span class="bar"></span>当前列表的标的 <span class="badge" id="count">0</span></div>
-      <ul id="stock-list" class="stock-list"></ul>
-      <div class="empty" id="empty">尚未添加，先在下方输入框中添加</div>
-      <div class="card-desc" style="margin-top:6px">↑ ↓ 调整顺序 · ⇧ 一键置顶 · ⇩ 一键置底（小组件按此顺序滚动展示）</div>
-    </section>
-
-    <section class="card">
-      <div class="card-title"><span class="bar"></span>快速添加</div>
-      <div class="row-ctrl">
-        <input id="symbol-input" placeholder="代码 600519 / 00981 / hk00981，或拼音缩写 gzmt/zxgj，回车添加" autocomplete="off" />
-        <button id="add-btn" class="btn primary">添加</button>
-      </div>
-      <div id="candidate-list" class="candidate-list" style="display:none"></div>
-      <div class="card-desc" style="margin-top:6px">支持：A股 / 基金 / 可转债 6 位代码（sh/sz 自动补齐）· 港股 5 位代码 <b>00981</b> 或 <b>hk00981</b> · 拼音首字母（gzmt=贵州茅台，zxgj=中芯国际，可带出港股候选）</div>
-    </section>
-
-    <section class="card">
-      <div class="card-title"><span class="bar"></span>批量粘贴</div>
-      <div class="card-desc">支持一次粘贴多行 / 逗号 / 空格分隔，自动识别名称（若接口可取到则自动补齐）</div>
-      <textarea id="bulk-input" placeholder="600519 贵州茅台&#10;000858&#10;300750 宁德时代&#10;00981 中芯国际&#10;hk00700 腾讯控股&#10;510300&#10;159915&#10;sz000001,sh601318"></textarea>
-      <div class="row-ctrl">
-        <button id="bulk-add" class="btn primary">批量添加</button>
-        <button id="clear-btn" class="btn ghost">清空列表</button>
+    <section class="card" data-page-node-id="mO34aZCtAJnvimgwkvll6A">
+      <div class="card-title" data-page-node-id="hvaF3SN3vgnp2bSZOjxIXq"><span class="bar" data-page-node-id="wrSg8ezh1RKYhNDZwIHEsl"></span>批量粘贴</div>
+      <div class="card-desc" data-page-node-id="behQGDxOc61VLVZvTrukEb">支持一次粘贴多行 / 逗号 / 空格分隔，自动识别名称（若接口可取到则自动补齐）</div>
+      <textarea id="bulk-input" placeholder="600519 贵州茅台&#10;000858&#10;300750 宁德时代&#10;00981 中芯国际&#10;hk00700 腾讯控股&#10;510300&#10;159915&#10;128050&#10;sz000001,sh601318"></textarea>
+      <div class="row-ctrl" data-page-node-id="5zb07mjo915bOd5KJGhV3z">
+        <button id="bulk-add" class="btn primary" data-page-node-id="QhrscouOlkDsWrHmL9AtYA">批量添加</button>
+        <button id="clear-btn" class="btn ghost" data-page-node-id="gYdxjjWjnXVhgYAjrC3FI9">清空列表</button>
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-title"><span class="bar"></span>外观与尺寸</div>
-      <div class="size-row">
-        <label class="size-label">宽
-          <input type="number" id="width-input" min="160" max="480" step="4" />
+    <section class="card" data-page-node-id="vWo6oAmSP1RhYtz1yLRsoK">
+      <div class="card-title" data-page-node-id="biSMcpxcy20rOUjNsTlfeI"><span class="bar" data-page-node-id="cE7qofwJ8KLQjkxsimYeJG"></span>外观与尺寸</div>
+      <div class="size-row" data-page-node-id="Fq2i8n4XzIyutHGhVWDexq">
+        <label class="size-label" data-page-node-id="YfjOubrt8mnamvhsV6DkA1">宽
+          <input type="number" id="width-input" min="160" max="480" step="4" data-page-node-id="lQi9ZQ3f92s5e3ZX4gXU6f" />
         </label>
-        <label class="size-label">高
-          <input type="number" id="height-input" min="60" max="600" step="4" />
+        <label class="size-label" data-page-node-id="J2HtxeDuniqf8vmeAL02Jl">高
+          <input type="number" id="height-input" min="60" max="600" step="4" data-page-node-id="ve9v7uDgVS1ezAatChZjif" />
         </label>
-        <span class="card-desc">即时生效（像素）</span>
+        <span class="card-desc" data-page-node-id="UWjTAaDKBAwEhgaBloiSeK">即时生效（像素）</span>
       </div>
-      <div class="opacity-row">
-        <label>背景透明度
-          <input type="range" id="opacity-slider" min="0.05" max="1.0" step="0.05" />
-          <span id="opacity-val" class="opacity-val">1.0</span>
+      <div class="opacity-row" data-page-node-id="0bxnwpOIcyfgnwcWTkc3tG">
+        <label data-page-node-id="e6FukFis47inRXSYPXMRmQ">背景透明度
+          <input type="range" id="opacity-slider" min="0.05" max="1.0" step="0.05" data-page-node-id="oJQxy8TnerRgGUsDUZnRJF" />
+          <span id="opacity-val" class="opacity-val" data-page-node-id="3yoTqC32jvlb8B9kx1X39d">1.0</span>
         </label>
-        <span class="card-desc">只淡卡片底色，文字不受影响；可低至 0.05</span>
+        <span class="card-desc" data-page-node-id="E5MgpHe3Tk83O4GWqa0AeV">只淡卡片底色，文字不受影响；可低至 0.05</span>
       </div>
       <div class="opacity-row" style="margin-top:8px">
-        <label>文字透明度
+        <label data-page-node-id="e6FukFis47inRXSYPXMRmQ">文字透明度
           <input type="range" id="text-opacity-slider" min="0.05" max="1.0" step="0.05" />
           <span id="text-opacity-val" class="opacity-val">1.0</span>
         </label>
@@ -94,14 +74,14 @@
         </label>
         <span class="card-desc">涨跌不再用红绿，改成深浅灰，摸鱼时更不显眼</span>
       </div>
-      <div class="size-row" style="margin-top:8px">
-        <label class="size-label">切换方式
-          <select id="display-mode">
-            <option value="scroll">滚动（平滑循环）</option>
-            <option value="jump">跳动（整屏翻页）</option>
+      <div class="size-row" style="margin-top:8px" data-page-node-id="lPHgo265ptPxwzeQshVyoc">
+        <label class="size-label" data-page-node-id="QY303FhNy5ekErHEsdTGfG">切换方式
+          <select id="display-mode" data-page-node-id="IuC3uu3jxTiVHR0rPavO5V">
+            <option value="scroll" data-page-node-id="2Tj0LrgABjHaufSRJbP6Ej">滚动（平滑循环）</option>
+            <option value="jump" data-page-node-id="oaLy2ZL9LH9pPBwuNNMGse">跳动（整屏翻页）</option>
           </select>
         </label>
-        <span class="card-desc">标的数 ≤ 可显示行数时不切换，全部同屏显示</span>
+        <span class="card-desc" data-page-node-id="KOuEU0S8Ox62grAm3nGAW3">股票数 ≤ 可显示行数时不切换，全部同屏显示</span>
       </div>
       <div class="opacity-row" style="margin-top:8px">
         <label>滚动速率
@@ -117,11 +97,11 @@
         </label>
         <span class="card-desc">每翻一页停留多久（仅跳动模式生效）</span>
       </div>
-      <div class="row-ctrl" style="margin-top:8px">
-        <label class="chk-label">
-          <input type="checkbox" id="topmost-chk" /> 窗口置顶
+      <div class="row-ctrl" style="margin-top:8px" data-page-node-id="gTinggRwIWp23ScLfpLOYo">
+        <label class="chk-label" data-page-node-id="OzUC6bfd9EmSOSdaeDQCjJ">
+          <input type="checkbox" id="topmost-chk" data-page-node-id="9pEuJ7YthrYm1L6p5mAHAA" /> 窗口置顶
         </label>
-        <span id="opacity-hint" style="color:#94a3b8;font-size:12px"></span>
+        <span id="opacity-hint" style="color:#94a3b8;font-size:12px" data-page-node-id="YYZuGC0HqVstRgCt7HhBhT"></span>
       </div>
     </section>
 
@@ -140,7 +120,7 @@
           <button type="button" class="pos-cell" data-anchor="bottom-right" title="右下（默认）"></button>
         </div>
         <div class="pos-side">
-          <div class="card-desc">点选九宫格，当前列表的小组件立即归位。<br/>也可直接拖动小组件，位置会自动记住。</div>
+          <div class="card-desc">点选九宫格，小组件立即归位。<br/>也可直接拖动小组件，位置会自动记住。</div>
           <div class="pos-readout" id="pos-readout">X -- · Y --</div>
           <button type="button" class="btn-mini" id="pos-default">回到右下角</button>
         </div>
@@ -149,34 +129,34 @@
 
     <section class="card" id="index-card">
       <div class="card-title"><span class="bar"></span>大盘指数 <span class="badge" id="index-count">0</span></div>
-      <div class="card-desc">勾选即加入<b>当前列表</b>，排在自选股之后；同样参与滚动 / 跳动与异动提醒（含邮件推送）。</div>
+      <div class="card-desc">勾选即加入小组件，显示在自选股之后；同样参与滚动 / 跳动与异动提醒（含邮件推送）。</div>
       <div class="idx-grid" id="idx-grid"></div>
     </section>
 
-    <section class="card">
-      <div class="card-title"><span class="bar"></span>异动提醒（当前列表）</div>
-      <div class="row-ctrl" style="margin-bottom:8px">
-        <label class="chk-label">
-          <input type="checkbox" id="alert-enabled" /> 启用异动提醒
+    <section class="card" data-page-node-id="uHxeHeDvmbLRxRysQr7QK8">
+      <div class="card-title" data-page-node-id="lULKlN4wTaMZffVUr84CNT"><span class="bar" data-page-node-id="HdfjmVnneuKmgKK4R5vFve"></span>异动提醒</div>
+      <div class="row-ctrl" style="margin-bottom:8px" data-page-node-id="gsNvSeWOGF6mYSXFEsbScQ">
+        <label class="chk-label" data-page-node-id="pQtaeuAFFYNItDNZtf7FN6">
+          <input type="checkbox" id="alert-enabled" data-page-node-id="i5HbiWE9HHeVYGZe7fPpqb" /> 启用异动提醒
         </label>
-        <button id="alert-test" class="btn ghost btn-sm">试一下</button>
+        <button id="alert-test" class="btn ghost" data-page-node-id="jR5qmnnAuX26quA7SfBZCS">试一下</button>
       </div>
-      <div class="size-row">
-        <label class="chk-label" style="flex:0 0 auto;min-width:88px">
-          <input type="checkbox" id="alert-up-on" /> 涨幅 ≥
+      <div class="size-row" data-page-node-id="WsWU4OseuPaO6Bfyg9utFQ">
+        <label class="chk-label" style="flex:0 0 auto;min-width:88px" data-page-node-id="GCCwnGZ6PwtEySVDbymZyA">
+          <input type="checkbox" id="alert-up-on" data-page-node-id="gTKg2Uu7AKzT93ksgFVHEO" /> 涨幅 ≥
         </label>
-        <label class="size-label">
-          <input type="number" id="alert-threshold-up" min="0.1" max="50" step="0.1" style="width:80px" />
-          <span class="card-desc">% 触发（红）</span>
+        <label class="size-label" data-page-node-id="HdAe3hd9wNsXmWIeAMgXte">
+          <input type="number" id="alert-threshold-up" min="0.1" max="50" step="0.1" style="width:80px" data-page-node-id="h92M7tR5FDx0MXyb2WlltD" />
+          <span class="card-desc" data-page-node-id="15bLFt5K19y79MUxDVkDS2">% 触发（红）</span>
         </label>
       </div>
-      <div class="size-row" style="margin-top:8px">
-        <label class="chk-label" style="flex:0 0 auto;min-width:88px">
-          <input type="checkbox" id="alert-down-on" /> 跌幅 ≥
+      <div class="size-row" style="margin-top:8px" data-page-node-id="NLsx6bujE0MpHaZintW6bv">
+        <label class="chk-label" style="flex:0 0 auto;min-width:88px" data-page-node-id="aoGRoqKzgklBInoUcQgPnh">
+          <input type="checkbox" id="alert-down-on" data-page-node-id="jv4zSUnnCIbkCGAAgEOMsR" /> 跌幅 ≥
         </label>
-        <label class="size-label">
-          <input type="number" id="alert-threshold-down" min="0.1" max="50" step="0.1" style="width:80px" />
-          <span class="card-desc">% 触发（绿）</span>
+        <label class="size-label" data-page-node-id="HB2VXZraIMKweuBErz1lCX">
+          <input type="number" id="alert-threshold-down" min="0.1" max="50" step="0.1" style="width:80px" data-page-node-id="0dGaPi18Usgdj4zAvpyEAI" />
+          <span class="card-desc" data-page-node-id="ykqpmC6fXQiPy4AneLgJte">% 触发（绿）</span>
         </label>
       </div>
       <div class="size-row" style="margin-top:8px">
@@ -192,37 +172,36 @@
         </span>
         <span class="card-desc">只在开盘时段提醒、收盘后 / 夜间 / 周末不打扰。A股 09:25–11:35 / 12:55–15:05；港股 09:00–12:00 / 13:00–16:00。</span>
       </div>
-      <div class="size-row" style="margin-top:8px">
-        <label class="size-label">冷却
-          <select id="alert-cooldown">
-            <option value="60000">1 分钟</option>
-            <option value="180000">3 分钟</option>
-            <option value="300000">5 分钟</option>
-            <option value="600000">10 分钟</option>
-            <option value="1800000">30 分钟</option>
+      <div class="size-row" style="margin-top:8px" data-page-node-id="97IY6AQteQupmBj5lH0svo">
+        <label class="size-label" data-page-node-id="tas6TVm1ayEnuD2UROSUWi">冷却
+          <select id="alert-cooldown" data-page-node-id="NOFCU6RXO30H6twaWZvhcD">
+            <option value="60000" data-page-node-id="xWspiHz2ZiU5B9xCbdJtg9">1 分钟</option>
+            <option value="180000" data-page-node-id="vfBoxlJUSQp9vfffHz46kf">3 分钟</option>
+            <option value="300000" data-page-node-id="haDEPApVmJstVHqsgTIiPI">5 分钟</option>
+            <option value="600000" data-page-node-id="BrpB6rEBrigi4J4PTNc145">10 分钟</option>
+            <option value="1800000" data-page-node-id="4DNiGKhkowAkfwQC9KCP0u">30 分钟</option>
           </select>
         </label>
-        <label class="chk-label">
-          <input type="checkbox" id="alert-sound" /> 提示音
+        <label class="chk-label" data-page-node-id="fruj1Jtbdl6fwfo1qq2Jy3">
+          <input type="checkbox" id="alert-sound" data-page-node-id="9l1SMYHfEmz8EAkLybkwW2" /> 提示音
         </label>
       </div>
-      <div class="card-desc" style="margin-top:6px">
-        涨幅、跌幅阈值<b>可分别设置</b>（例如涨 3.9% / 跌 5%）。取消勾选即关闭该方向提醒。<br/>
-        触发后：系统通知 + 提示音 + 该列表小组件对应行闪烁。冷却期内同一只不重复打扰。
+      <div class="card-desc" style="margin-top:6px" data-page-node-id="Fc2q8Dv0BZxznEGxZ1H81P">
+        涨幅、跌幅阈值<b data-page-node-id="EMeA2XIIkfeahhxFZpAsvX">可分别设置</b>（例如涨 3.9% / 跌 5%）。取消勾选即关闭该方向提醒。<br  data-page-node-id="EMaf1W67GJGmzAm7bT0dCQ"/>
+        触发后：系统通知 + 提示音 + 小组件对应行闪烁。冷却期内同一只不重复打扰。
       </div>
     </section>
 
-    <!-- ============ 邮件：全局发件账号 + 收件槽位 ============ -->
     <section class="card" id="email-card">
-      <div class="card-title"><span class="bar"></span>邮件推送 · 发件账号（全部列表共用）</div>
+      <div class="card-title"><span class="bar"></span>邮件推送</div>
       <div class="row-ctrl" style="margin-bottom:8px">
         <label class="chk-label"><input type="checkbox" id="email-enabled" /> 启用邮件推送</label>
-        <button id="email-test" class="btn ghost btn-sm">发送测试邮件</button>
+        <button id="email-test" class="btn ghost">发送测试邮件</button>
         <span id="email-test-result" class="card-desc"></span>
       </div>
       <div class="size-row">
         <label class="size-label">SMTP 服务器
-          <input type="text" id="email-host" placeholder="smtp.qq.com" style="width:150px" autocomplete="off" />
+          <input type="text" id="email-host" placeholder="smtp.qq.com" style="width:160px" autocomplete="off" />
         </label>
         <label class="size-label">端口
           <input type="number" id="email-port" min="1" max="65535" style="width:78px" />
@@ -241,22 +220,12 @@
         </label>
         <span class="card-desc" id="email-pass-hint"></span>
       </div>
-
-      <div class="sub-title">收件邮箱槽位（1~5 个）</div>
-      <div class="card-desc">这里是"给谁发"的地址池。每个地址可单独启用 / 停用，下面再由每个列表挑选自己发给哪几个槽位。<br/>填完地址记得把该行右侧的<b>「启用」</b>勾上（1 号槽默认已启用），没勾的槽位不会被投递。</div>
-      <div class="slot-list" id="mail-slots"></div>
-
-      <div class="sub-title">当前列表发给</div>
-      <div class="size-row" style="align-items:flex-start">
-        <div class="mail-pick" id="mail-pick"></div>
-        <div class="pos-side" style="flex:1 1 auto">
-          <div class="card-desc" id="mail-to-readout"></div>
-          <button id="email-digest-now" class="btn ghost btn-sm" style="margin-top:6px">立即给当前列表发一封汇总</button>
-          <span id="email-digest-result" class="card-desc"></span>
-        </div>
+      <div class="size-row" style="margin-top:8px">
+        <label class="size-label" style="flex:1 1 auto">收件邮箱
+          <input type="text" id="email-to" placeholder="多个用英文逗号分隔" style="width:100%" autocomplete="off" />
+        </label>
       </div>
-
-      <div class="size-row" style="margin-top:10px">
+      <div class="size-row" style="margin-top:8px">
         <label class="chk-label" style="flex:0 0 auto;min-width:186px">
           <input type="checkbox" id="email-follow" checked /> 阈值跟随异动提醒
         </label>
@@ -275,51 +244,30 @@
         <label class="size-label">每
           <input type="number" id="email-digest-min" min="1" max="1440" step="1" style="width:80px" /> 分钟
         </label>
-        <span class="card-desc" id="digest-hint"></span>
+        <button id="email-digest-now" class="btn ghost">立即发一封汇总</button>
+        <span id="email-digest-result" class="card-desc"></span>
+      </div>
+      <div class="card-desc" style="margin-top:4px">
+        勾选后，每隔设定分钟数把<b>当前全部行情</b>（自选股 + 大盘指数）汇总成一封邮件发出；间隔 1~1440 分钟。<br/>
+        与上面的异动推送<b>互不影响</b>：异动是"到阈值才发"，汇总是"到点就发"，两条通道各自独立计时。
       </div>
       <div class="card-desc" style="margin-top:6px">
-        勾选后，每隔设定分钟数把<b>当前列表的全部行情</b>汇总成一封邮件发出（间隔 1~1440 分钟）。<br/>
-        汇总邮件是手机友好的卡片排版，涨红跌绿；同时附带纯文本版，老邮箱客户端也能正常看。<br/>
-        与异动推送<b>互不影响</b>：异动是"到阈值才发"，汇总是"到点就发"，两条通道各自独立计时。<br/>
+        阈值默认与异动提醒一致；取消勾选后可单独设置（例如异动 3.9% 就提醒，邮件只在 6% 才发）。<br/>
         <b>授权码不是登录密码</b>：QQ / 163 邮箱需先到邮箱「设置 → 账户」开启 SMTP 服务并生成授权码。<br/>
         触发后异步发信，不影响行情刷新；发送记录见程序目录 <b>maillog.txt</b>，失败详情见 <b>error.log</b>。
       </div>
     </section>
 
-    <!-- ============ 配置导出 / 导入 ============ -->
-    <section class="card" id="io-card">
-      <div class="card-title"><span class="bar"></span>配置导出 / 导入</div>
-      <div class="card-desc">把全部监控列表与邮件设置导出成一个 JSON 文件，换台电脑装上程序后导入即可复现，不用重新配一遍。<br/>导入会覆盖当前全部配置（原配置会自动备份为 <b>config.ini.bak</b>）。</div>
-      <div class="row-ctrl" style="margin-top:9px">
-        <button id="export-btn" class="btn primary">导出配置…</button>
-        <button id="import-btn" class="btn ghost">导入配置…</button>
-        <label class="chk-label" style="margin-left:6px">
-          <input type="checkbox" id="export-pass" checked /> 导出时包含邮箱授权码
-        </label>
-      </div>
-      <div class="card-desc" style="margin-top:6px">
-        不含授权码时，导入到新机器后需要重新填一次授权码才能发邮件。<br/>
-        <b>导出文件里会包含收件邮箱地址</b>，请注意存放位置，不要随意转发。
-      </div>
-      <div class="card-desc" id="io-result" style="margin-top:6px;color:#2563eb"></div>
-    </section>
-
     <section class="card" id="about-card">
-      <div class="card-title"><span class="bar"></span>关于与更新 <span class="badge" id="about-ver">v1.5.0</span></div>
+      <div class="card-title"><span class="bar"></span>关于 <span class="badge" id="about-ver">v1.4.5</span></div>
       <div class="size-row">
-        <span class="card-desc" style="flex:0 0 auto;min-width:170px">当前版本　<b id="about-version">v1.5.0</b></span>
+        <span class="card-desc" style="flex:0 0 auto;min-width:170px">版本号　<b id="about-version">v1.4.5</b></span>
         <span class="card-desc">发布日期　<b id="about-builddate">—</b></span>
       </div>
-      <div class="size-row" style="margin-top:8px">
-        <button id="check-update-btn" class="btn ghost btn-sm">检查更新</button>
-        <button id="download-update-btn" class="btn primary btn-sm" style="display:none">下载并安装新版</button>
-        <span class="card-desc" id="update-status">启动后会自动检查一次（每 24 小时一次）</span>
-      </div>
-      <div class="card-desc" style="margin-top:6px" id="update-notes"></div>
       <div class="card-desc" style="margin-top:6px">
         <b>Marketmonitor</b> 是一款 Windows 桌面悬浮行情小组件：A股 / 基金 / 可转债 / 港股 / 大盘指数
         同屏展示，支持滚动与整屏跳动、异动提醒（系统通知 + 提示音 + 邮件推送）、
-        背景与文字透明度分别可调、黑白摸鱼模式、九宫格一键归位、多列表独立监控。<br/>
+        背景与文字透明度分别可调、黑白摸鱼模式、九宫格一键归位。<br/>
         行情数据：腾讯财经；代码搜索：东方财富。帮助菜单 →「关于 Marketmonitor」可查看版本号与发布日期。仓库：
         <span id="about-repo" style="color:#2f6feb;cursor:pointer;text-decoration:underline">github.com/yohoky/marketmonitor</span>
       </div>
@@ -329,8 +277,8 @@
       </div>
     </section>
 
-    <footer class="foot">
-      <span>当前列表共 <b id="count-foot">0</b> 只 · 30 秒刷新 · 右键小组件可打开本窗口</span>
+    <footer class="foot" data-page-node-id="YZ8VwwFkl4STjyBbALdbcr">
+      <span data-page-node-id="4BMw0zBQkPjY5GwTuXVhNd">共 <b id="count-foot" data-page-node-id="fBXjFE8ts88PquyaExC4fU">0</b> 只 · 30 秒刷新 · 右键小组件可打开本窗口</span>
     </footer>
   </div>
   <script src="settings.js"></script>

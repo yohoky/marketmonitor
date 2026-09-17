@@ -6,16 +6,10 @@ dist/
 out/
 
 # 运行时数据与日志
-# 注意：config.ini 存 SMTP 授权码、maillog.txt 存收件人邮箱，都绝不可入库
 config.ini
-config.ini.bak*
 error.log
 *.log
-maillog.txt
-mail*.txt
 *.trigger
-selfcheck.*
-alerttest.*
 
 # 临时 / 调试 / 快照
 _p/
