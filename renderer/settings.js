@@ -1,5 +1,10 @@
-// 设置页逻辑：添加 / 批量 / 删除 / 实时价格展示
+// 设置页逻辑（v1.5.0：多监控列表 / 收件邮箱槽位 / 配置导出导入 / 自动更新）
+//
+// 数据流：主进程持有唯一真相（store），本页只保存一份镜像 state。
+// 所有改动都走 saveList(id, patch) / saveEmailConfig(patch)，成功后用主进程返回的对象回写镜像，
+// 避免"界面显示的值"和"实际落盘的值"不一致（归一化逻辑只在主进程里存在一份）。
 
+// ---------- 元素句柄 ----------
 const listEl = document.getElementById('stock-list');
 const emptyEl = document.getElementById('empty');
 const countEl = document.getElementById('count');
@@ -7,10 +12,21 @@ const countFootEl = document.getElementById('count-foot');
 const symbolInput = document.getElementById('symbol-input');
 const bulkInput = document.getElementById('bulk-input');
 const candidateList = document.getElementById('candidate-list');
+const tabsEl = document.getElementById('list-tabs');
 
 // 东方财富拼音搜索 API（免费无 key）
 const PINYIN_API = 'https://searchapi.eastmoney.com/api/suggest/get';
 const PINYIN_TOKEN = 'D43BF722C8E33BDC906FB84D85E326E8';
+
+// ---------- 全局状态镜像 ----------
+let state = { lists: [], email: {}, presetIndexes: [], maxLists: 6, maxBoxes: 5 };
+let activeId = null;
+let lastQuotes = [];       // 全量行情缓存（多列表合并请求的那一份）
+let quotesMap = {};        // symbol(小写) -> quote
+
+function activeList() {
+  return state.lists.find(l => l.id === activeId) || null;
+}
 
 // ---------- 代码识别 ----------
 // 支持：A 股 / 基金(ETF/LOF) / 可转债 / 港股
@@ -46,102 +62,177 @@ function normalizeSymbol(raw) {
   return null;
 }
 
-// ---------- 渲染列表 ----------
-let stocks = [];
-let quotesMap = {};
-let lastQuotes = [];
+// ---------- Tab ----------
+function renderTabs() {
+  if (!tabsEl) return;
+  tabsEl.innerHTML = '';
+  state.lists.forEach((l) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tab' + (l.id === activeId ? ' active' : '');
+    b.innerHTML = `<span class="t-name">${escapeHtml(l.name || l.id)}</span><span class="t-num">${(l.symbols || []).length}</span>`;
+    b.title = `${l.name || l.id}（${(l.symbols || []).length} 只）${l.visible === false ? ' · 启动不显示' : ''}`;
+    b.addEventListener('click', () => selectList(l.id));
+    tabsEl.appendChild(b);
+  });
+  const addBtn = document.getElementById('new-list-btn');
+  if (addBtn) {
+    const full = state.lists.length >= state.maxLists;
+    addBtn.disabled = full;
+    addBtn.textContent = full ? `已达上限 ${state.maxLists} 个` : '+ 新建列表';
+  }
+}
 
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// 切换列表 Tab：把这一份配置铺到所有控件上
+function selectList(id) {
+  if (!state.lists.some(l => l.id === id)) return;
+  activeId = id;
+  renderTabs();
+  renderList();
+  renderListMeta();
+  renderAppearance();
+  renderAlerts();
+  renderMailPick();
+  renderDigest();
+  renderIdxGrid();
+  renderPosition();
+  renderFooter();
+}
+
+// ---------- 当前列表：元信息 ----------
+function renderListMeta() {
+  const l = activeList();
+  if (!l) return;
+  const nameEl = document.getElementById('list-name');
+  const visEl = document.getElementById('list-visible');
+  const delBtn = document.getElementById('list-delete');
+  const hint = document.getElementById('list-hint');
+  if (nameEl) nameEl.value = l.name || '';
+  if (visEl) visEl.checked = l.visible !== false;
+  if (delBtn) {
+    const only = state.lists.length <= 1;
+    delBtn.disabled = only;
+    delBtn.title = only ? '至少要保留一个列表' : '删除后该列表的窗口会关闭';
+  }
+  if (hint) {
+    const pos = l.position || { x: 0, y: 0 };
+    hint.innerHTML = `列表 ID <b>${escapeHtml(l.id)}</b> · 窗口 ${l.width}×${l.height} · 位置 X ${pos.x} / Y ${pos.y}`
+      + (l.visible === false ? ' · <b>启动时不显示</b>（可从托盘「监控列表」里手动打开）' : '');
+  }
+}
+
+// ---------- 当前列表：标的列表 ----------
 function renderList() {
+  const l = activeList();
+  if (!listEl || !l) return;
+  const symbols = l.symbols || [];
   listEl.innerHTML = '';
-  emptyEl.style.display = stocks.length === 0 ? 'block' : 'none';
-  countEl.textContent = stocks.length;
-  countFootEl.textContent = stocks.length;
+  if (emptyEl) emptyEl.style.display = symbols.length === 0 ? 'block' : 'none';
+  if (countEl) countEl.textContent = symbols.length;
+  if (countFootEl) countFootEl.textContent = symbols.length;
 
-  stocks.forEach((s, idx) => {
-    const q = quotesMap[s.symbol] || lastQuotes.find(x => x.symbol === s.symbol);
+  symbols.forEach((s, idx) => {
+    const q = quotesMap[String(s.symbol).toLowerCase()];
     const pct = q ? (q.changePct || 0) : 0;
     const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
     const sign = pct > 0 ? '+' : '';
     const li = document.createElement('li');
     li.innerHTML = `
-      <div class="s-name" title="${s.name || s.symbol}">${s.name || s.symbol}</div>
-      <div class="s-code">${s.symbol}</div>
-      <div class="s-price">${q ? q.price.toFixed(2) : '--'}</div>
+      <div class="s-name" title="${escapeHtml(s.name || s.symbol)}">${escapeHtml(s.name || s.symbol)}</div>
+      <div class="s-code">${escapeHtml(s.symbol)}</div>
+      <div class="s-price">${q ? Number(q.price).toFixed(2) : '--'}</div>
       <div class="s-pct ${cls}">${q ? `${sign}${pct.toFixed(2)}%` : '--'}</div>
       <div class="s-sort">
         <button class="s-top" data-idx="${idx}" title="一键置顶（移到最前）" ${idx === 0 ? 'disabled' : ''}>⇧</button>
         <button class="s-up" data-idx="${idx}" title="上移" ${idx === 0 ? 'disabled' : ''}>↑</button>
-        <button class="s-down" data-idx="${idx}" title="下移" ${idx === stocks.length - 1 ? 'disabled' : ''}>↓</button>
-        <button class="s-bottom" data-idx="${idx}" title="一键置底（移到末尾）" ${idx === stocks.length - 1 ? 'disabled' : ''}>⇩</button>
+        <button class="s-down" data-idx="${idx}" title="下移" ${idx === symbols.length - 1 ? 'disabled' : ''}>↓</button>
+        <button class="s-bottom" data-idx="${idx}" title="一键置底（移到末尾）" ${idx === symbols.length - 1 ? 'disabled' : ''}>⇩</button>
       </div>
       <button class="s-del" data-idx="${idx}" title="删除">×</button>
     `;
     listEl.appendChild(li);
   });
 
-  // 删除按钮
+  const edit = (fn) => async (e) => {
+    const arr = (activeList().symbols || []).slice();
+    const next = fn(arr, +e.currentTarget.dataset.idx);
+    if (next) await commitSymbols(next);
+  };
+
   listEl.querySelectorAll('.s-del').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      const idx = +e.currentTarget.dataset.idx;
-      stocks.splice(idx, 1);
-      await window.stockApi.saveStocks(stocks);
-      renderList();
-    });
+    btn.addEventListener('click', edit((arr, i) => { arr.splice(i, 1); return arr; }));
   });
-  // 一键置顶：把该条移到列表最前，其余保持原有相对顺序
   listEl.querySelectorAll('.s-top').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      const i = +e.currentTarget.dataset.idx;
-      if (i <= 0) return;
-      const [item] = stocks.splice(i, 1);
-      stocks.unshift(item);
-      await window.stockApi.saveStocks(stocks);
-      renderList();
-    });
+    btn.addEventListener('click', edit((arr, i) => {
+      if (i <= 0) return null;
+      const [x] = arr.splice(i, 1); arr.unshift(x); return arr;
+    }));
   });
-  // 排序按钮：上移 / 下移
+  listEl.querySelectorAll('.s-bottom').forEach((btn) => {
+    btn.addEventListener('click', edit((arr, i) => {
+      if (i >= arr.length - 1) return null;
+      const [x] = arr.splice(i, 1); arr.push(x); return arr;
+    }));
+  });
   listEl.querySelectorAll('.s-up').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      const i = +e.currentTarget.dataset.idx;
-      if (i <= 0) return;
-      [stocks[i - 1], stocks[i]] = [stocks[i], stocks[i - 1]];
-      await window.stockApi.saveStocks(stocks);
-      renderList();
-    });
+    btn.addEventListener('click', edit((arr, i) => {
+      if (i <= 0) return null;
+      [arr[i - 1], arr[i]] = [arr[i], arr[i - 1]]; return arr;
+    }));
   });
   listEl.querySelectorAll('.s-down').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      const i = +e.currentTarget.dataset.idx;
-      if (i >= stocks.length - 1) return;
-      [stocks[i], stocks[i + 1]] = [stocks[i + 1], stocks[i]];
-      await window.stockApi.saveStocks(stocks);
-      renderList();
-    });
+    btn.addEventListener('click', edit((arr, i) => {
+      if (i >= arr.length - 1) return null;
+      [arr[i], arr[i + 1]] = [arr[i + 1], arr[i]]; return arr;
+    }));
   });
-  // 一键置底：把该条移到列表末尾，其余保持原有相对顺序（与一键置顶对称）
-  listEl.querySelectorAll('.s-bottom').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      const i = +e.currentTarget.dataset.idx;
-      if (i >= stocks.length - 1) return;
-      const [item] = stocks.splice(i, 1);
-      stocks.push(item);
-      await window.stockApi.saveStocks(stocks);
-      renderList();
-    });
-  });
+  renderFooter();
+}
+
+function renderFooter() {
+  const l = activeList();
+  const n = l ? (l.symbols || []).length : 0;
+  if (countFootEl) countFootEl.textContent = n;
+  if (countEl) countEl.textContent = n;
+}
+
+// 保存当前列表的标的（完整数组），成功后回写镜像并刷新 UI
+async function commitSymbols(symbols) {
+  const l = activeList();
+  if (!l) return;
+  try {
+    const r = await window.stockApi.saveList(l.id, { symbols });
+    if (r && r.ok && r.list) applyListUpdate(r.list);
+    else if (r && r.error) alert(r.error);
+  } catch (e) { console.error('saveList(symbols) 失败', e); }
+  renderTabs();
+  renderList();
+  renderListMeta();
+  renderIdxGrid();
+}
+
+// 用主进程返回的权威对象替换镜像里那一条
+function applyListUpdate(u) {
+  const i = state.lists.findIndex(l => l.id === u.id);
+  if (i >= 0) state.lists[i] = u; else state.lists.push(u);
 }
 
 // ---------- 添加单只 ----------
 async function addOne(raw) {
+  const l = activeList();
+  if (!l) return false;
+  const symbols = (l.symbols || []).slice();
   const sym = normalizeSymbol(raw);
   if (!sym) {
-    // 尝试按拼音搜索
     const candidates = await searchStocks(raw);
-    if (candidates.length === 1) {
-      return addByCandidate(candidates[0]);
-    }
+    if (candidates.length === 1) return addByCandidate(candidates[0]);
     if (candidates.length > 1) {
-      // 弹出选择
       const pick = await showPicker(candidates);
       if (pick) return addByCandidate(pick);
       return false;
@@ -149,16 +240,15 @@ async function addOne(raw) {
     alert(`未找到匹配「${raw}」的品种，请输入代码（A股/基金/可转债 6 位，港股 5 位或 hk 前缀）或更精确的拼音缩写`);
     return false;
   }
-  if (stocks.find(s => s.symbol === sym)) {
-    alert(`已存在：${sym}`);
+  if (symbols.find(s => String(s.symbol).toLowerCase() === sym.toLowerCase())) {
+    alert(`本列表已存在：${sym}`);
     return false;
   }
   const name = await fetchStockName(sym);
-  stocks.push({ symbol: sym, name });
-  await window.stockApi.saveStocks(stocks);
+  symbols.push({ symbol: sym, name });
+  await commitSymbols(symbols);
   symbolInput.value = '';
   symbolInput.focus();
-  renderList();
   return true;
 }
 
@@ -184,7 +274,7 @@ async function searchStocks(query, count = 5) {
       // A 股 + 基金 + 可转债 + 港股（指数等排除）
       .filter((x) => {
         const mkt = Number(x.MktNum);
-        // 港股：东财市场号 116 / Classify=HK；只保留 5 位以内的正股，滤掉窝轮牛熊证(14567 这类 1xxxx)
+        // 港股：东财市场号 116 / Classify=HK；只保留 5 位以内的正股，滤掉窝轮牛熊证
         if (mkt === 116 || x.Classify === 'HK') {
           const c = String(x.Code || '');
           if (!/^\d{5}$/.test(c)) return false;
@@ -201,7 +291,7 @@ async function searchStocks(query, count = 5) {
         name: x.Name,
         pinYin: x.PinYin,
       }))
-      .filter((x) => x.symbol && /^((sh|sz)\d{6}|hk\d{5})$/.test(x.symbol) && !/指数|指数$/.test(x.name || ''));
+      .filter((x) => x.symbol && /^((sh|sz)\d{6}|hk\d{5})$/.test(x.symbol) && !/指数/.test(x.name || ''));
   } catch (e) {
     console.error('[searchStocks]', e.message);
     return [];
@@ -219,6 +309,7 @@ function buildSymbol(code, mktNum) {
 
 // ---------- 候选展示 ----------
 function renderCandidates(list) {
+  if (!candidateList) return;
   if (!list || list.length === 0) {
     candidateList.style.display = 'none';
     candidateList.innerHTML = '';
@@ -230,18 +321,16 @@ function renderCandidates(list) {
     const div = document.createElement('div');
     div.className = 'candidate';
     div.innerHTML = `
-      <div class="c-name" title="${c.pinYin}">${c.name}</div>
-      <div class="c-code">${c.symbol}</div>
-      <div class="c-pinyin">${c.pinYin}</div>
+      <div class="c-name" title="${escapeHtml(c.pinYin)}">${escapeHtml(c.name)}</div>
+      <div class="c-code">${escapeHtml(c.symbol)}</div>
+      <div class="c-pinyin">${escapeHtml(c.pinYin)}</div>
     `;
-    div.addEventListener('click', async () => {
-      await addByCandidate(c);
-    });
+    div.addEventListener('click', () => addByCandidate(c));
     candidateList.appendChild(div);
   });
 }
 function hideCandidates() {
-  candidateList.style.display = 'none';
+  if (candidateList) candidateList.style.display = 'none';
 }
 
 // 模态选择器（候选多时弹一层）
@@ -251,11 +340,11 @@ function showPicker(candidates) {
     mask.className = 'picker-mask';
     const box = document.createElement('div');
     box.className = 'picker-box';
-    box.innerHTML = '<div class="picker-title">请选择要添加的股票（最多前 10 个）</div>' +
+    box.innerHTML = '<div class="picker-title">请选择要添加的品种（最多前 10 个）</div>' +
       candidates.slice(0, 10).map((c, i) => `
         <div class="picker-item" data-i="${i}">
-          <div class="p-name">${c.name}</div>
-          <div class="p-code">${c.symbol}</div>
+          <div class="p-name">${escapeHtml(c.name)}</div>
+          <div class="p-code">${escapeHtml(c.symbol)}</div>
         </div>`).join('') +
       '<div class="picker-cancel" data-cancel>取消</div>';
     mask.appendChild(box);
@@ -273,78 +362,76 @@ function showPicker(candidates) {
       resolve(null);
     });
     mask.addEventListener('click', (e) => {
-      if (e.target === mask) {
-        mask.remove();
-        resolve(null);
-      }
+      if (e.target === mask) { mask.remove(); resolve(null); }
     });
   });
 }
 
 async function addByCandidate(c) {
-  if (stocks.find(s => s.symbol === c.symbol)) {
-    alert(`已存在：${c.name} ${c.symbol}`);
+  const l = activeList();
+  if (!l) return false;
+  const symbols = (l.symbols || []).slice();
+  if (symbols.find(s => String(s.symbol).toLowerCase() === String(c.symbol).toLowerCase())) {
+    alert(`本列表已存在：${c.name} ${c.symbol}`);
     return false;
   }
-  stocks.push({ symbol: c.symbol, name: c.name });
-  await window.stockApi.saveStocks(stocks);
+  symbols.push({ symbol: c.symbol, name: c.name });
+  await commitSymbols(symbols);
   symbolInput.value = '';
   hideCandidates();
-  renderList();
   return true;
 }
 
 // ---------- 批量添加 ----------
-function parseBulk(text) {
+function parseBulk(text, existing) {
   if (!text) return [];
-  // 拆分：换行 / 空格 / 逗号 / 分号
-  const toks = String(text)
-    .split(/[\s,;，；，]+/)
-    .filter(Boolean);
+  const toks = String(text).split(/[\s,;，；]+/).filter(Boolean);
   const out = [];
-  const seen = new Set(stocks.map(s => s.symbol));
+  const seen = new Set(existing.map(s => String(s.symbol).toLowerCase()));
   for (const t of toks) {
-    // 提取代码：可带 sh/sz/hk 前缀（跳过可能的名称前缀，比如 "600519 贵州茅台"）
     // 5~6 位 = A股/基金/可转债/港股；hk 前缀另允许 1~4 位（hk981）
     const m = t.match(/(?:hk|sh|sz)?\d{5,6}/i) || t.match(/hk\d{1,4}/i);
     if (!m) continue;
     const sym = normalizeSymbol(m[0]);
     if (!sym) continue;
-    if (seen.has(sym)) continue;
-    seen.add(sym);
+    const key = sym.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     // 名字：取数字之后的文字
     let name = '';
-    const spaceMatch = t.split(/\s+/);
-    for (const piece of spaceMatch) {
+    for (const piece of t.split(/\s+/)) {
       if (!/^\d+$/.test(piece)) { name = piece; break; }
     }
-    out.push({ raw: sym, name });
+    out.push({ symbol: sym, name });
   }
   return out;
 }
 
 async function bulkAdd() {
-  const arr = parseBulk(bulkInput.value);
+  const l = activeList();
+  if (!l) return;
+  const arr = parseBulk(bulkInput.value, l.symbols || []);
   if (arr.length === 0) {
-    alert('未识别到任何有效代码');
+    alert('未识别到任何有效代码（或全部已存在于本列表）');
     return;
   }
-  for (const { raw, name } of arr) {
-    const finalName = name || await fetchStockName(raw);
-    stocks.push({ symbol: raw, name: finalName });
+  const symbols = (l.symbols || []).slice();
+  for (const it of arr) {
+    const finalName = it.name || await fetchStockName(it.symbol);
+    symbols.push({ symbol: it.symbol, name: finalName });
   }
-  await window.stockApi.saveStocks(stocks);
+  await commitSymbols(symbols);
   bulkInput.value = '';
-  renderList();
 }
 
 // ---------- 清空 ----------
 async function clearAll() {
-  if (stocks.length === 0) return;
-  if (!confirm(`确定清空 ${stocks.length} 条记录？`)) return;
-  stocks = [];
-  await window.stockApi.saveStocks(stocks);
-  renderList();
+  const l = activeList();
+  if (!l) return;
+  const n = (l.symbols || []).length;
+  if (n === 0) return;
+  if (!confirm(`确定清空「${l.name}」的 ${n} 条记录？`)) return;
+  await commitSymbols([]);
 }
 
 // ---------- 拉取股票名（走 IPC 由主进程 GBK 解码）----------
@@ -357,15 +444,17 @@ async function fetchStockName(sym) {
 }
 
 // ---------- 名称自动补全 ----------
-// 监控列表里凡是"名称缺失"（name 为空 或 name===symbol）的品种，
-// 自动解析成中文名称：优先用实时行情已带的名称，其次向主进程查一次，
-// 成功后落库并刷新，只此一次（成功后 pending 为空，不再重复请求）。
+// 当前列表里凡是"名称缺失"（name 为空 或 name===symbol）的品种，自动解析成中文名称：
+// 优先用实时行情已带的名称，其次向主进程查一次，成功后落库并刷新，只此一次。
 async function backfillNames() {
-  const pending = stocks.filter(s => !s.name || s.name === s.symbol);
+  const l = activeList();
+  if (!l) return;
+  const symbols = (l.symbols || []).slice();
+  const pending = symbols.filter(s => !s.name || s.name === s.symbol);
   if (pending.length === 0) return;
   let dirty = false;
   for (const s of pending) {
-    const q = lastQuotes.find(x => x.symbol === s.symbol);
+    const q = quotesMap[String(s.symbol).toLowerCase()];
     let resolved = (q && q.name && q.name !== s.symbol) ? q.name : null;
     if (!resolved) {
       try {
@@ -376,11 +465,11 @@ async function backfillNames() {
     if (resolved) { s.name = resolved; dirty = true; }
   }
   if (dirty) {
-    try { await window.stockApi.saveStocks(stocks); renderList(); } catch (_) {}
+    try { await commitSymbols(symbols); } catch (_) {}
   }
 }
 
-// ---------- 透明度 + 置顶 + 尺寸 ----------
+// ---------- 外观与尺寸 ----------
 const opacitySlider = document.getElementById('opacity-slider');
 const opacityVal = document.getElementById('opacity-val');
 const opacityHint = document.getElementById('opacity-hint');
@@ -391,281 +480,83 @@ const displayModeSel = document.getElementById('display-mode');
 const textOpacitySlider = document.getElementById('text-opacity-slider');
 const textOpacityVal = document.getElementById('text-opacity-val');
 const monoChk = document.getElementById('mono-chk');
-// 滚动速率 / 跳动间隔：v1.4.4 起由原来的单一 rotationMs 拆成两个独立参数
 const scrollSpeedSlider = document.getElementById('scroll-speed-slider');
 const scrollSpeedVal = document.getElementById('scroll-speed-val');
 const jumpIntervalSlider = document.getElementById('jump-interval-slider');
 const jumpIntervalVal = document.getElementById('jump-interval-val');
 
-let widgetCfg = null;   // 缓存 widget 配置 {opacity, topMost, width, height}
+// 把当前列表的外观配置铺到控件上
+function renderAppearance() {
+  const l = activeList();
+  if (!l) return;
+  const op = l.opacity ?? 1.0;
+  if (opacitySlider) { opacitySlider.value = op; }
+  if (opacityVal) opacityVal.textContent = Number(op).toFixed(2);
+  const tp = l.textOpacity ?? 1.0;
+  if (textOpacitySlider) textOpacitySlider.value = tp;
+  if (textOpacityVal) textOpacityVal.textContent = Number(tp).toFixed(2);
+  if (monoChk) monoChk.checked = !!l.mono;
+  if (topmostChk) topmostChk.checked = l.topMost !== false;
+  if (widthInput) widthInput.value = l.width || 220;
+  if (heightInput) heightInput.value = l.height || 84;
+  if (displayModeSel) displayModeSel.value = l.displayMode || 'scroll';
+  const sm = l.scrollMs || 3000;
+  if (scrollSpeedSlider) { scrollSpeedSlider.value = sm; }
+  if (scrollSpeedVal) scrollSpeedVal.textContent = (Number(sm) / 1000).toFixed(1) + 's/行';
+  const jm = l.jumpMs || 3000;
+  if (jumpIntervalSlider) { jumpIntervalSlider.value = jm; }
+  if (jumpIntervalVal) jumpIntervalVal.textContent = (Number(jm) / 1000).toFixed(1) + 's/页';
+}
 
-async function loadWidgetCfg() {
-  // 从主进程获取 widget 配置（扩展 preload API）
+// 列表级配置保存：patch 里放哪几项就改哪几项（主进程与现有值合并后归一化）
+async function saveActive(patch) {
+  const l = activeList();
+  if (!l) return null;
   try {
-    const cfg = await window.stockApi.getWidgetConfig();
-    widgetCfg = cfg;
-  } catch (_) {
-    widgetCfg = { opacity: 1.0, textOpacity: 1.0, mono: false, topMost: true, width: 220, height: 84 };
-  }
-  if (opacitySlider) {
-    opacitySlider.value = widgetCfg.opacity || 1.0;
-    opacityVal.textContent = (widgetCfg.opacity || 1.0).toFixed(2);
-  }
-  if (textOpacitySlider) {
-    const t = widgetCfg.textOpacity ?? 1.0;
-    textOpacitySlider.value = t;
-    textOpacityVal.textContent = Number(t).toFixed(2);
-  }
-  if (monoChk) monoChk.checked = !!widgetCfg.mono;
-  if (topmostChk) {
-    topmostChk.checked = widgetCfg.topMost !== false;
-  }
-  if (widthInput) widthInput.value = widgetCfg.width || 220;
-  if (heightInput) heightInput.value = widgetCfg.height || 84;
-  if (displayModeSel) displayModeSel.value = widgetCfg.displayMode || 'scroll';
-  if (scrollSpeedSlider) {
-    const v = widgetCfg.scrollMs || 3000;
-    scrollSpeedSlider.value = v;
-    scrollSpeedVal.textContent = (Number(v) / 1000).toFixed(1) + 's/行';
-  }
-  if (jumpIntervalSlider) {
-    const v = widgetCfg.jumpMs || 3000;
-    jumpIntervalSlider.value = v;
-    jumpIntervalVal.textContent = (Number(v) / 1000).toFixed(1) + 's/页';
-  }
-}
-
-// ---------- 大盘指数 ----------
-const idxGrid = document.getElementById('idx-grid');
-const indexCount = document.getElementById('index-count');
-let indexPresets = [];
-let indexList = [];      // 已勾选：[{symbol, name}]
-
-function idxNameOf(sym) {
-  const key = String(sym).toLowerCase();
-  const hit = indexPresets.find(p => p.symbol.toLowerCase() === key);
-  return hit ? hit.name : sym;
-}
-
-function renderIdxGrid() {
-  if (!idxGrid) return;
-  const onMap = new Map(indexList.map(x => [String(x.symbol).toLowerCase(), x]));
-  // 预设 + 配置里出现过的额外代码（保证手写在 config.ini 里的指数不丢）
-  const all = indexPresets.slice();
-  for (const x of indexList) {
-    if (!all.some(p => p.symbol.toLowerCase() === String(x.symbol).toLowerCase())) all.push(x);
-  }
-  idxGrid.innerHTML = '';
-  all.forEach((p) => {
-    const key = String(p.symbol).toLowerCase();
-    const on = onMap.has(key);
-    const label = document.createElement('label');
-    label.className = 'idx-item' + (on ? ' on' : '');
-    label.innerHTML = `
-      <input type="checkbox"${on ? ' checked' : ''} />
-      <span>${(onMap.get(key) && onMap.get(key).name) || p.name || idxNameOf(p.symbol)}</span>
-      <span class="idx-sym">${p.symbol}</span>
-    `;
-    label.querySelector('input').addEventListener('change', async (e) => {
-      if (e.target.checked) {
-        if (!indexList.some(x => String(x.symbol).toLowerCase() === key)) {
-          indexList.push({ symbol: p.symbol, name: idxNameOf(p.symbol) });
-        }
-      } else {
-        indexList = indexList.filter(x => String(x.symbol).toLowerCase() !== key);
-      }
-      await saveIdx();
-    });
-    idxGrid.appendChild(label);
-  });
-  if (indexCount) indexCount.textContent = indexList.length;
-}
-
-async function saveIdx() {
-  try {
-    const saved = await window.stockApi.saveIndexes(indexList);
-    if (Array.isArray(saved)) indexList = saved;
-  } catch (e) { console.error('saveIndexes 失败', e); }
-  renderIdxGrid();
-}
-
-async function loadIdx() {
-  try {
-    const r = await window.stockApi.getIndexes();
-    indexPresets = (r && r.presets) || [];
-    indexList = (r && r.list) || [];
-  } catch (e) { console.error('getIndexes 失败', e); }
-  renderIdxGrid();
-}
-
-// ---------- 邮件推送 ----------
-const emailEnabled = document.getElementById('email-enabled');
-const emailHost = document.getElementById('email-host');
-const emailPort = document.getElementById('email-port');
-const emailSecure = document.getElementById('email-secure');
-const emailUser = document.getElementById('email-user');
-const emailPass = document.getElementById('email-pass');
-const emailPassHint = document.getElementById('email-pass-hint');
-const emailTo = document.getElementById('email-to');
-const emailFollow = document.getElementById('email-follow');
-const emailThUp = document.getElementById('email-threshold-up');
-const emailThDown = document.getElementById('email-threshold-down');
-const emailTestBtn = document.getElementById('email-test');
-const emailTestResult = document.getElementById('email-test-result');
-const emailDigest = document.getElementById('email-digest');
-const emailDigestMin = document.getElementById('email-digest-min');
-const emailDigestNowBtn = document.getElementById('email-digest-now');
-const emailDigestResult = document.getElementById('email-digest-result');
-let emailCfg = {};
-
-// 跟随异动阈值时，独立阈值输入框置灰并回显当前异动阈值
-function syncEmailThresholdUI() {
-  const follow = !emailFollow || emailFollow.checked;
-  const up = (alertsCfg && alertsCfg.thresholdUp != null) ? alertsCfg.thresholdUp : 3.9;
-  const down = (alertsCfg && alertsCfg.thresholdDown != null) ? alertsCfg.thresholdDown : 3.9;
-  if (emailThUp) {
-    emailThUp.disabled = follow;
-    if (follow) emailThUp.value = up;
-  }
-  if (emailThDown) {
-    emailThDown.disabled = follow;
-    if (follow) emailThDown.value = down;
-  }
-}
-
-// 汇总开关关闭时，间隔输入框与「立即发一封」置灰，避免误以为已经生效
-function syncDigestUI() {
-  const on = !!(emailDigest && emailDigest.checked);
-  if (emailDigestMin) emailDigestMin.disabled = !on;
-  if (emailDigestNowBtn) emailDigestNowBtn.disabled = !on;
-}
-
-async function loadEmailCfg() {
-  try {
-    const c = await window.stockApi.getEmailConfig();
-    if (c) emailCfg = c;
-  } catch (e) { console.error('getEmailConfig 失败', e); }
-  if (emailEnabled) emailEnabled.checked = !!emailCfg.enabled;
-  if (emailHost) emailHost.value = emailCfg.host || '';
-  if (emailPort) emailPort.value = emailCfg.port || 465;
-  if (emailSecure) emailSecure.checked = emailCfg.secure !== false;
-  if (emailUser) emailUser.value = emailCfg.user || '';
-  if (emailTo) emailTo.value = emailCfg.to || '';
-  if (emailFollow) emailFollow.checked = emailCfg.followAlerts !== false;
-  if (emailThUp) emailThUp.value = emailCfg.thresholdUp ?? 3.9;
-  if (emailThDown) emailThDown.value = emailCfg.thresholdDown ?? 3.9;
-  if (emailDigest) emailDigest.checked = !!emailCfg.digestEnabled;
-  if (emailDigestMin) emailDigestMin.value = emailCfg.digestIntervalMin || 30;
-  if (emailPass) emailPass.value = '';
-  if (emailPassHint) {
-    emailPassHint.textContent = emailCfg.hasPass ? '已保存授权码（留空则不修改）' : '尚未设置授权码';
-    emailPassHint.style.color = emailCfg.hasPass ? '#16a34a' : '#94a3b8';
-  }
-  syncEmailThresholdUI();
-  syncDigestUI();
-}
-
-async function saveEmailCfg(patch) {
-  try {
-    const r = await window.stockApi.saveEmailConfig({ ...(emailCfg || {}), ...patch });
-    if (r) {
-      emailCfg = r;
-      if (emailPassHint) {
-        emailPassHint.textContent = r.hasPass ? '已保存授权码（留空则不修改）' : '尚未设置授权码';
-        emailPassHint.style.color = r.hasPass ? '#16a34a' : '#94a3b8';
-      }
-    }
-  } catch (e) { console.error('saveEmailConfig 失败', e); }
-}
-
-// ---------- 异动提醒配置 ----------
-const alertEnabled = document.getElementById('alert-enabled');
-const alertUpOn = document.getElementById('alert-up-on');
-const alertDownOn = document.getElementById('alert-down-on');
-const alertThresholdUp = document.getElementById('alert-threshold-up');
-const alertThresholdDown = document.getElementById('alert-threshold-down');
-const alertCooldown = document.getElementById('alert-cooldown');
-const alertSound = document.getElementById('alert-sound');
-const alertTrading = document.getElementById('alert-trading');
-const alertMarket = document.getElementById('alert-market');
-let alertsCfg = {
-  enabled: true, thresholdUp: 3.9, thresholdDown: 3.9,
-  direction: 'both', sound: true, cooldownMs: 180000, tradingHours: true, market: 'a',
-};
-
-// 「涨幅 / 跌幅」两个勾选框 ⇄ direction 字段互转
-function dirFromChecks(upOn, downOn) {
-  if (upOn && downOn) return 'both';
-  if (upOn) return 'up';
-  if (downOn) return 'down';
-  return 'none';                 // 两个都不勾 = 不提醒
-}
-function checksFromDir(dir) {
-  return { up: dir !== 'down' && dir !== 'none', down: dir !== 'up' && dir !== 'none' };
-}
-
-async function loadAlertsCfg() {
-  try {
-    const c = await window.stockApi.getAlertsConfig();
-    if (c) alertsCfg = c;
-  } catch (_) {}
-  const chk = checksFromDir(alertsCfg.direction || 'both');
-  if (alertEnabled) alertEnabled.checked = alertsCfg.enabled !== false;
-  if (alertUpOn) alertUpOn.checked = chk.up;
-  if (alertDownOn) alertDownOn.checked = chk.down;
-  if (alertThresholdUp) alertThresholdUp.value = alertsCfg.thresholdUp ?? alertsCfg.threshold ?? 3.9;
-  if (alertThresholdDown) alertThresholdDown.value = alertsCfg.thresholdDown ?? alertsCfg.threshold ?? 3.9;
-  if (alertSound) alertSound.checked = alertsCfg.sound !== false;
-  if (alertTrading) alertTrading.checked = alertsCfg.tradingHours !== false;
-  if (alertMarket) alertMarket.value = ['a', 'hk', 'both'].includes(alertsCfg.market) ? alertsCfg.market : 'a';
-  if (alertCooldown) {
-    const cd = String(alertsCfg.cooldownMs ?? 180000);
-    const opts = Array.from(alertCooldown.options).map(o => o.value);
-    alertCooldown.value = opts.includes(cd) ? cd : '180000';
-  }
-}
-
-async function saveAlertsCfg(patch) {
-  alertsCfg = { ...alertsCfg, ...patch };
-  try {
-    alertsCfg = await window.stockApi.saveAlertsConfig(alertsCfg) || alertsCfg;
-  } catch (_) {}
+    const r = await window.stockApi.saveList(l.id, patch);
+    if (r && r.ok && r.list) { applyListUpdate(r.list); return r.list; }
+    if (r && r.error) console.warn('saveList 失败：', r.error);
+  } catch (e) { console.error('saveList 失败', e); }
+  return null;
 }
 
 opacitySlider?.addEventListener('input', () => {
   const v = parseFloat(opacitySlider.value);
-  opacityVal.textContent = v.toFixed(2);
-  if (v >= 0.7) opacityHint.textContent = '';
-  else if (v >= 0.35) opacityHint.textContent = '摸鱼模式 🐟';
-  else opacityHint.textContent = '深度摸鱼 🐟🐟🐟';
+  if (opacityVal) opacityVal.textContent = v.toFixed(2);
+  if (opacityHint) {
+    if (v >= 0.7) opacityHint.textContent = '';
+    else if (v >= 0.35) opacityHint.textContent = '摸鱼模式 🐟';
+    else opacityHint.textContent = '深度摸鱼 🐟🐟🐟';
+  }
 });
-
 opacitySlider?.addEventListener('change', async () => {
-  const v = parseFloat(opacitySlider.value);
-  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), opacity: v });
+  await saveActive({ opacity: parseFloat(opacitySlider.value) });
 });
 
-// 文字透明度：只淡文字/数字，与背景透明度互不影响
 textOpacitySlider?.addEventListener('input', () => {
-  textOpacityVal.textContent = parseFloat(textOpacitySlider.value).toFixed(2);
+  if (textOpacityVal) textOpacityVal.textContent = parseFloat(textOpacitySlider.value).toFixed(2);
 });
 textOpacitySlider?.addEventListener('change', async () => {
-  const v = parseFloat(textOpacitySlider.value);
-  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), textOpacity: v });
+  await saveActive({ textOpacity: parseFloat(textOpacitySlider.value) });
 });
 
-// 黑白模式：涨跌改深浅灰
-monoChk?.addEventListener('change', async () => {
-  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), mono: monoChk.checked });
+monoChk?.addEventListener('change', async () => { await saveActive({ mono: monoChk.checked }); });
+topmostChk?.addEventListener('change', async () => { await saveActive({ topMost: topmostChk.checked }); });
+displayModeSel?.addEventListener('change', async () => { await saveActive({ displayMode: displayModeSel.value }); });
+
+scrollSpeedSlider?.addEventListener('input', () => {
+  if (scrollSpeedVal) scrollSpeedVal.textContent = (parseInt(scrollSpeedSlider.value, 10) / 1000).toFixed(1) + 's/行';
+});
+scrollSpeedSlider?.addEventListener('change', async () => {
+  await saveActive({ scrollMs: parseInt(scrollSpeedSlider.value, 10) });
+});
+jumpIntervalSlider?.addEventListener('input', () => {
+  if (jumpIntervalVal) jumpIntervalVal.textContent = (parseInt(jumpIntervalSlider.value, 10) / 1000).toFixed(1) + 's/页';
+});
+jumpIntervalSlider?.addEventListener('change', async () => {
+  await saveActive({ jumpMs: parseInt(jumpIntervalSlider.value, 10) });
 });
 
-topmostChk?.addEventListener('change', async () => {
-  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), topMost: topmostChk.checked });
-});
-
-// 尺寸调整：原来的 'change' 事件只在输入框失焦/回车时才触发，
-// 导致"边输边看毫无反应，要重启才生效"（重启才发现值其实早就存了）。
-// 改为 'input' 实时应用 + debounce 节流，避免每敲一个字符都 setSize 造成窗口抖动。
 function debounce(fn, ms) {
   let t = null;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
@@ -681,64 +572,36 @@ function readRange(el, fbMin, fbMax) {
   };
 }
 
+// 尺寸：边输边看，但只提交落在合法区间内的值 —— 否则 84→240 的中间态 "2"/"24" 会让窗口先塌到最小再弹回
 async function commitSize() {
-  if (!widthInput || !heightInput) return;
+  const l = activeList();
+  if (!widthInput || !heightInput || !l) return;
   const wr = readRange(widthInput, 160, 480);
   const hr = readRange(heightInput, 60, 600);
   const w = parseInt(widthInput.value, 10);
   const h = parseInt(heightInput.value, 10);
-
-  // 关键：只应用在合法区间内的值。
-  // 用户把 84 改成 240 的过程中会依次出现 "2"、"24" 这类半成品，
-  // 若照单全收，窗口会先被 clamp 到下限（一路塌到最小）再弹回来，非常抖动。
   const patch = {};
   if (Number.isFinite(w) && w >= wr.min && w <= wr.max) patch.width = w;
   if (Number.isFinite(h) && h >= hr.min && h <= hr.max) patch.height = h;
-  // 值没变就不发 IPC：blur/change 兜底和 input 会重复触发同一结果，省掉冗余调用
-  const changed =
-    (patch.width !== undefined && patch.width !== (widgetCfg && widgetCfg.width)) ||
-    (patch.height !== undefined && patch.height !== (widgetCfg && widgetCfg.height));
+  const changed = (patch.width !== undefined && patch.width !== l.width)
+    || (patch.height !== undefined && patch.height !== l.height);
   if (!changed) return;
-
-  try {
-    widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), ...patch });
-  } catch (e) { console.error('saveWidgetConfig(size) 失败', e); }
+  await saveActive(patch);
+  renderListMeta();
 }
 
 const applySize = debounce(commitSize, 220);
-
 widthInput?.addEventListener('input', applySize);
 heightInput?.addEventListener('input', applySize);
-// 失焦/回车兜底：立即落值（debounce 还在等的时候用户直接关窗也不会丢）
 widthInput?.addEventListener('change', commitSize);
 heightInput?.addEventListener('change', commitSize);
-// 回车：立即提交，不等 debounce
 [widthInput, heightInput].forEach((el) => {
   el?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }   // blur 会触发 change → commitSize
+    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }   // blur 触发 change → commitSize
   });
 });
-displayModeSel?.addEventListener('change', async () => {
-  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), displayMode: displayModeSel.value });
-});
 
-// 滚动速率 / 跳动间隔：拖动时只更新文字（顺滑），松手才落库并下发给小组件
-scrollSpeedSlider?.addEventListener('input', () => {
-  scrollSpeedVal.textContent = (parseInt(scrollSpeedSlider.value, 10) / 1000).toFixed(1) + 's/行';
-});
-scrollSpeedSlider?.addEventListener('change', async () => {
-  const v = parseInt(scrollSpeedSlider.value, 10);
-  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), scrollMs: v });
-});
-jumpIntervalSlider?.addEventListener('input', () => {
-  jumpIntervalVal.textContent = (parseInt(jumpIntervalSlider.value, 10) / 1000).toFixed(1) + 's/页';
-});
-jumpIntervalSlider?.addEventListener('change', async () => {
-  const v = parseInt(jumpIntervalSlider.value, 10);
-  widgetCfg = await window.stockApi.saveWidgetConfig({ ...(widgetCfg || {}), jumpMs: v });
-});
-
-// ---------- 屏幕位置：九宫格归位 ----------
+// ---------- 屏幕位置 ----------
 const posGrid = document.getElementById('pos-grid');
 const posReadout = document.getElementById('pos-readout');
 const posDefaultBtn = document.getElementById('pos-default');
@@ -750,10 +613,15 @@ function markActiveCell(anchor) {
 }
 
 async function moveTo(anchor) {
+  const l = activeList();
+  if (!l) return;
   markActiveCell(anchor);
   try {
-    const p = await window.stockApi.setWidgetPosition(anchor);
+    const p = await window.stockApi.setWidgetPosition(l.id, anchor);
     if (posReadout && p) posReadout.textContent = `X ${p.x} · Y ${p.y}`;
+    const cur = activeList();
+    if (cur && p) cur.position = { x: p.x, y: p.y };
+    renderListMeta();
   } catch (e) { console.error('setWidgetPosition 失败', e); }
 }
 
@@ -763,27 +631,151 @@ posGrid?.addEventListener('click', (e) => {
 });
 posDefaultBtn?.addEventListener('click', () => moveTo('bottom-right'));
 
-// 打开设置页时显示当前坐标
-(async () => {
+// 打开设置页 / 切换列表时，刷新坐标读数
+async function renderPosition() {
+  const l = activeList();
+  if (!l) return;
   try {
-    const p = await window.stockApi.getWidgetPosition();
+    const p = await window.stockApi.getWidgetPosition(l.id);
     if (posReadout && p) posReadout.textContent = `X ${p.x} · Y ${p.y}`;
-  } catch (_) { /* 主进程未就绪时忽略 */ }
-})();
-
-// ---------- 异动提醒事件 ----------
-alertEnabled?.addEventListener('change', () => saveAlertsCfg({ enabled: alertEnabled.checked }));
-alertSound?.addEventListener('change', () => saveAlertsCfg({ sound: alertSound.checked }));
-alertTrading?.addEventListener('change', () => saveAlertsCfg({ tradingHours: alertTrading.checked }));
-alertMarket?.addEventListener('change', () => saveAlertsCfg({ market: alertMarket.value }));
-alertCooldown?.addEventListener('change', () => saveAlertsCfg({ cooldownMs: parseInt(alertCooldown.value) }));
-
-// 涨 / 跌 分开：勾选框决定方向，两个输入框分别设置阈值
-function saveDirection() {
-  saveAlertsCfg({ direction: dirFromChecks(!!alertUpOn?.checked, !!alertDownOn?.checked) });
+  } catch (_) {
+    const pos = l.position || { x: 0, y: 0 };
+    if (posReadout) posReadout.textContent = `X ${pos.x} · Y ${pos.y}`;
+  }
 }
-alertUpOn?.addEventListener('change', saveDirection);
-alertDownOn?.addEventListener('change', saveDirection);
+
+// ---------- 板块指数（勾选即加入当前列表）----------
+const idxGrid = document.getElementById('idx-grid');
+const indexCount = document.getElementById('index-count');
+
+// 预设按「宽基 / 板块」两组展示；手写在 config.ini 里的清单外代码归到"其它"，
+// 保证用户自己加的指数在页面上也看得见、能取消勾选。
+const IDX_GROUPS = [
+  { key: 'broad', title: '宽基指数' },
+  { key: 'sector', title: '板块指数' },
+  { key: 'other', title: '其它（当前列表里已有的指数）' },
+];
+
+// 判断一个代码"是不是指数"：上证指数系列 sh000xxx、深证指数系列 sz399xxx、
+// 国证指数 sz980xxx，以及港股/外盘指数（hk 开头）。
+// 个股（sh6xxxxx / sz00xxxx / sz30xxxx）与基金（sh5xxxxx / sz1[5-8]xxxx）、可转债一律不算。
+// 这个过滤是必须的：早期版本把列表里的【个股】也当成候选项塞进指数勾选区，
+// 表现为"指数区里混着一堆个股"，用户一眼就看出不对。
+function looksLikeIndex(sym) {
+  const s = String(sym || '').toLowerCase();
+  return /^sh000\d{3}$/.test(s) || /^sz399\d{3}$/.test(s) || /^sz980\d{3}$/.test(s) || /^hk[a-z]+$/.test(s);
+}
+
+function renderIdxGrid() {
+  if (!idxGrid) return;
+  const l = activeList();
+  const symbols = (l && l.symbols) || [];
+  const onMap = new Map(symbols.map(s => [String(s.symbol).toLowerCase(), s]));
+  // 预设 + 当前列表里出现过的额外【指数】代码（保证手写在 config.ini 里的指数不丢）；
+  // 个股 / 基金 / 可转债不进这个网格（looksLikeIndex 过滤），否则指数区会混进个股。
+  const all = state.presetIndexes.slice();
+  for (const s of symbols) {
+    const key = String(s.symbol).toLowerCase();
+    if (!looksLikeIndex(s.symbol)) continue;
+    if (!all.some(p => String(p.symbol).toLowerCase() === key)) all.push({ symbol: s.symbol, name: s.name, group: 'other' });
+  }
+  idxGrid.innerHTML = '';
+  IDX_GROUPS.forEach((g) => {
+    const items = all.filter((p) => (g.key === 'other'
+      ? (p.group !== 'broad' && p.group !== 'sector')
+      : p.group === g.key));
+    if (!items.length) return;
+    const title = document.createElement('div');
+    title.className = 'idx-group-title';
+    title.textContent = g.title;
+    idxGrid.appendChild(title);
+    const bucket = document.createElement('div');
+    bucket.className = 'idx-group-items';
+    items.forEach((p) => bucket.appendChild(makeIdxItem(p, onMap)));
+    idxGrid.appendChild(bucket);
+  });
+  if (indexCount) {
+    const n = all.filter(p => onMap.has(String(p.symbol).toLowerCase())).length;
+    indexCount.textContent = n;
+  }
+}
+
+// 单个指数勾选项：勾 / 取消 → 立即写回当前列表
+function makeIdxItem(p, onMap) {
+  const key = String(p.symbol).toLowerCase();
+  const on = onMap.has(key);
+  const label = document.createElement('label');
+  label.className = 'idx-item' + (on ? ' on' : '');
+  label.innerHTML = `
+    <input type="checkbox"${on ? ' checked' : ''} />
+    <span>${escapeHtml((onMap.get(key) && onMap.get(key).name) || p.name || p.symbol)}</span>
+    <span class="idx-sym">${escapeHtml(p.symbol)}</span>
+  `;
+  label.querySelector('input').addEventListener('change', async (e) => {
+    const cur = activeList();
+    if (!cur) return;
+    let arr = (cur.symbols || []).slice();
+    if (e.target.checked) {
+      if (!arr.some(x => String(x.symbol).toLowerCase() === key)) arr.push({ symbol: p.symbol, name: p.name || p.symbol });
+    } else {
+      arr = arr.filter(x => String(x.symbol).toLowerCase() !== key);
+    }
+    await commitSymbols(arr);
+  });
+  return label;
+}
+
+// ---------- 异动提醒（当前列表）----------
+const alertEnabled = document.getElementById('alert-enabled');
+const alertUpOn = document.getElementById('alert-up-on');
+const alertDownOn = document.getElementById('alert-down-on');
+const alertThresholdUp = document.getElementById('alert-threshold-up');
+const alertThresholdDown = document.getElementById('alert-threshold-down');
+const alertCooldown = document.getElementById('alert-cooldown');
+const alertSound = document.getElementById('alert-sound');
+const alertTrading = document.getElementById('alert-trading');
+const alertMarket = document.getElementById('alert-market');
+
+// 「涨幅 / 跌幅」两个勾选框 ⇄ direction 字段互转
+function dirFromChecks(upOn, downOn) {
+  if (upOn && downOn) return 'both';
+  if (upOn) return 'up';
+  if (downOn) return 'down';
+  return 'none';                 // 两个都不勾 = 不提醒
+}
+function checksFromDir(dir) {
+  return { up: dir !== 'down' && dir !== 'none', down: dir !== 'up' && dir !== 'none' };
+}
+
+function renderAlerts() {
+  const l = activeList();
+  if (!l) return;
+  const a = l.alerts || {};
+  const chk = checksFromDir(a.direction || 'both');
+  if (alertEnabled) alertEnabled.checked = a.enabled !== false;
+  if (alertUpOn) alertUpOn.checked = chk.up;
+  if (alertDownOn) alertDownOn.checked = chk.down;
+  if (alertThresholdUp) alertThresholdUp.value = a.thresholdUp ?? 3.9;
+  if (alertThresholdDown) alertThresholdDown.value = a.thresholdDown ?? 3.9;
+  if (alertSound) alertSound.checked = a.sound !== false;
+  if (alertTrading) alertTrading.checked = a.tradingHours !== false;
+  if (alertMarket) alertMarket.value = ['a', 'hk', 'both'].includes(a.market) ? a.market : 'a';
+  if (alertCooldown) {
+    const cd = String(a.cooldownMs ?? 180000);
+    const opts = Array.from(alertCooldown.options).map(o => o.value);
+    alertCooldown.value = opts.includes(cd) ? cd : '180000';
+  }
+  syncEmailThresholdUI();   // 邮件阈值若跟随异动，需要回显当前列表的阈值
+}
+
+// 只改 alerts 里指定的几项，其余保持当前列表原值
+async function saveAlerts(patch) {
+  const l = activeList();
+  if (!l) return;
+  const next = { ...(l.alerts || {}), ...patch };
+  await saveActive({ alerts: next });
+  renderAlerts();
+}
 
 function readThreshold(el, fallback) {
   let v = parseFloat(el.value);
@@ -792,19 +784,206 @@ function readThreshold(el, fallback) {
   el.value = v;
   return v;
 }
-alertThresholdUp?.addEventListener('change', async () => {
-  await saveAlertsCfg({ thresholdUp: readThreshold(alertThresholdUp, 3.9) });
-  syncEmailThresholdUI();       // 邮件阈值若跟随异动，这里同步回显
-});
-alertThresholdDown?.addEventListener('change', async () => {
-  await saveAlertsCfg({ thresholdDown: readThreshold(alertThresholdDown, 3.9) });
-  syncEmailThresholdUI();
-});
+
+alertEnabled?.addEventListener('change', () => saveAlerts({ enabled: alertEnabled.checked }));
+alertSound?.addEventListener('change', () => saveAlerts({ sound: alertSound.checked }));
+alertTrading?.addEventListener('change', () => saveAlerts({ tradingHours: alertTrading.checked }));
+alertMarket?.addEventListener('change', () => saveAlerts({ market: alertMarket.value }));
+alertCooldown?.addEventListener('change', () => saveAlerts({ cooldownMs: parseInt(alertCooldown.value, 10) }));
+function saveDirection() {
+  saveAlerts({ direction: dirFromChecks(!!alertUpOn?.checked, !!alertDownOn?.checked) });
+}
+alertUpOn?.addEventListener('change', saveDirection);
+alertDownOn?.addEventListener('change', saveDirection);
+alertThresholdUp?.addEventListener('change', () => saveAlerts({ thresholdUp: readThreshold(alertThresholdUp, 3.9) }));
+alertThresholdDown?.addEventListener('change', () => saveAlerts({ thresholdDown: readThreshold(alertThresholdDown, 3.9) }));
 document.getElementById('alert-test')?.addEventListener('click', async () => {
-  try { await window.stockApi.testAlert(); } catch (_) {}
+  try { await window.stockApi.testAlert(activeId); } catch (_) {}
 });
 
-// ---------- 邮件推送事件 ----------
+// ---------- 邮件：全局发件账号 + 收件槽位 ----------
+const emailEnabled = document.getElementById('email-enabled');
+const emailHost = document.getElementById('email-host');
+const emailPort = document.getElementById('email-port');
+const emailSecure = document.getElementById('email-secure');
+const emailUser = document.getElementById('email-user');
+const emailPass = document.getElementById('email-pass');
+const emailPassHint = document.getElementById('email-pass-hint');
+const emailFollow = document.getElementById('email-follow');
+const emailThUp = document.getElementById('email-threshold-up');
+const emailThDown = document.getElementById('email-threshold-down');
+const emailTestBtn = document.getElementById('email-test');
+const emailTestResult = document.getElementById('email-test-result');
+const slotsEl = document.getElementById('mail-slots');
+const pickEl = document.getElementById('mail-pick');
+const mailToReadout = document.getElementById('mail-to-readout');
+const emailDigest = document.getElementById('email-digest');
+const emailDigestMin = document.getElementById('email-digest-min');
+const digestHint = document.getElementById('digest-hint');
+const emailDigestNowBtn = document.getElementById('email-digest-now');
+const emailDigestResult = document.getElementById('email-digest-result');
+
+function looksLikeMail(s) {
+  return /^[^\s@,;，；]+@[^\s@,;，；]+\.[^\s@,;，；]+$/.test(String(s || '').trim());
+}
+
+// 发件账号部分
+function renderEmailGlobal() {
+  const c = state.email || {};
+  if (emailEnabled) emailEnabled.checked = !!c.enabled;
+  if (emailHost) emailHost.value = c.host || '';
+  if (emailPort) emailPort.value = c.port || 465;
+  if (emailSecure) emailSecure.checked = c.secure !== false;
+  if (emailUser) emailUser.value = c.user || '';
+  if (emailPass) emailPass.value = '';
+  if (emailPassHint) {
+    emailPassHint.textContent = c.hasPass ? '已保存授权码（留空则不修改）' : '尚未设置授权码';
+    emailPassHint.style.color = c.hasPass ? '#16a34a' : '#94a3b8';
+  }
+  if (emailFollow) emailFollow.checked = c.followAlerts !== false;
+  if (emailThUp) emailThUp.value = c.thresholdUp ?? 3.9;
+  if (emailThDown) emailThDown.value = c.thresholdDown ?? 3.9;
+}
+
+// 收件槽位（1~5）：地址 + 启用
+function renderSlots() {
+  if (!slotsEl) return;
+  const boxes = (state.email && state.email.boxes) || [];
+  const max = state.maxBoxes || 5;
+  slotsEl.innerHTML = '';
+  for (let i = 0; i < max; i++) {
+    const b = boxes[i] || { addr: '', on: i === 0 };
+    const row = document.createElement('div');
+    row.className = 'slot-row' + (b.on ? '' : ' off');
+    const bad = b.addr && !looksLikeMail(b.addr) ? '<span class="slot-bad">格式有误</span>' : '';
+    row.innerHTML = `
+      <span class="slot-no">${i + 1}</span>
+      <input type="text" data-i="${i}" placeholder="收件邮箱地址（留空即不用这个槽位）" value="${escapeHtml(b.addr || '')}" autocomplete="off" />
+      ${bad}
+      <label class="chk-label" style="flex:0 0 auto"><input type="checkbox" data-on="${i}" ${b.on ? 'checked' : ''} /> 启用</label>
+    `;
+    const addrIn = row.querySelector('input[type="text"]');
+    const onIn = row.querySelector('input[type="checkbox"]');
+    addrIn.addEventListener('change', () => saveSlots(i, addrIn.value.trim(), onIn.checked));
+    onIn.addEventListener('change', () => saveSlots(i, addrIn.value.trim(), onIn.checked));
+    slotsEl.appendChild(row);
+  }
+}
+
+// 写回某个槽位（把 5 个槽位整体提交，主进程会做去重与归一化）
+async function saveSlots(index, addr, on) {
+  const boxes = [];
+  const max = state.maxBoxes || 5;
+  const cur = (state.email && state.email.boxes) || [];
+  for (let i = 0; i < max; i++) {
+    const b = cur[i] || { addr: '', on: false };
+    if (i === index) boxes.push({ addr, on: !!on });
+    else boxes.push({ addr: b.addr || '', on: !!b.on });
+  }
+  try {
+    const r = await window.stockApi.saveEmailConfig({ ...(state.email || {}), boxes });
+    if (r) { state.email = r; }
+  } catch (e) { console.error('saveEmailConfig(boxes) 失败', e); }
+  renderSlots();
+  renderMailPick();
+  renderEmailGlobal();
+}
+
+// 当前列表的收件人勾选（mailboxes = 槽位序号数组）
+function renderMailPick() {
+  if (!pickEl) return;
+  const l = activeList();
+  const boxes = (state.email && state.email.boxes) || [];
+  const chosen = new Set((l && l.mail && l.mail.mailboxes) || []);
+  pickEl.innerHTML = '';
+  let usable = 0;
+  boxes.forEach((b, i) => {
+    const no = i + 1;
+    const addr = String(b.addr || '').trim();
+    if (!addr || !looksLikeMail(addr)) return;   // 空槽位 / 格式错误的不列入
+    usable++;
+    const on = chosen.has(no);
+    const item = document.createElement('label');
+    item.className = 'pick-item' + (on ? ' on' : '') + (b.on ? '' : ' disabled');
+    item.title = b.on ? '' : '该槽位已在上面停用，即使勾选也不会收到';
+    item.innerHTML = `<input type="checkbox" ${on ? 'checked' : ''} data-no="${no}" />`
+      + `<span>${no} 号 · ${escapeHtml(addr)}</span>`;
+    item.querySelector('input').addEventListener('change', async (e) => {
+      const set = new Set((activeList().mail && activeList().mail.mailboxes) || []);
+      if (e.target.checked) set.add(no); else set.delete(no);
+      await saveActive({ mail: { ...(activeList().mail || {}), mailboxes: [...set].sort((a, b2) => a - b2) } });
+      renderMailPick();
+    });
+    pickEl.appendChild(item);
+  });
+  if (!usable) {
+    pickEl.innerHTML = '<span class="pick-empty">还没有可用的收件邮箱，先在上面的槽位里填好地址</span>';
+  }
+  renderMailToReadout();
+}
+
+// 回显"这个列表实际会发给谁"
+function renderMailToReadout() {
+  if (!mailToReadout) return;
+  const l = activeList();
+  const boxes = (state.email && state.email.boxes) || [];
+  const idx = (l && l.mail && l.mail.mailboxes) || [];
+  const to = [];
+  for (const no of idx) {
+    const b = boxes[no - 1];
+    if (b && b.on && looksLikeMail(b.addr)) to.push(String(b.addr).trim());
+  }
+  if (!to.length) {
+    mailToReadout.innerHTML = '<b style="color:#ef4444">该列表目前不会发出任何邮件</b>：请勾选至少一个已启用的收件槽位。';
+  } else {
+    mailToReadout.innerHTML = `将发送到：<b>${escapeHtml(to.join(', '))}</b>（共 ${to.length} 个）`;
+  }
+}
+
+// 跟随异动阈值时，独立阈值输入框置灰并回显当前列表的异动阈值
+function syncEmailThresholdUI() {
+  const follow = !emailFollow || emailFollow.checked;
+  const l = activeList();
+  const a = (l && l.alerts) || {};
+  const up = a.thresholdUp != null ? a.thresholdUp : 3.9;
+  const down = a.thresholdDown != null ? a.thresholdDown : 3.9;
+  if (emailThUp) { emailThUp.disabled = follow; if (follow) emailThUp.value = up; }
+  if (emailThDown) { emailThDown.disabled = follow; if (follow) emailThDown.value = down; }
+}
+
+async function saveEmailCfg(patch) {
+  try {
+    const r = await window.stockApi.saveEmailConfig({ ...(state.email || {}), ...patch });
+    if (r) state.email = r;
+  } catch (e) { console.error('saveEmailConfig 失败', e); }
+  renderEmailGlobal();
+}
+
+// ---------- 当前列表的定时汇总 ----------
+function renderDigest() {
+  const l = activeList();
+  if (!l || !emailDigest) return;
+  const m = l.mail || {};
+  emailDigest.checked = !!m.digestEnabled;
+  if (emailDigestMin) emailDigestMin.value = m.digestIntervalMin || 30;
+  emailDigestMin.disabled = !m.digestEnabled;
+  if (digestHint) {
+    digestHint.textContent = m.digestEnabled
+      ? `该列表每 ${m.digestIntervalMin || 30} 分钟汇总一封（独立计时）`
+      : '（仅对当前列表生效）';
+  }
+  if (emailDigestResult) emailDigestResult.textContent = '';
+}
+
+async function saveMail(patch) {
+  const l = activeList();
+  if (!l) return;
+  const next = { ...(l.mail || {}), ...patch };
+  await saveActive({ mail: next });
+  renderDigest();
+  renderMailPick();
+}
+
 emailEnabled?.addEventListener('change', () => saveEmailCfg({ enabled: emailEnabled.checked }));
 emailHost?.addEventListener('change', () => saveEmailCfg({ host: emailHost.value.trim() }));
 emailPort?.addEventListener('change', () => saveEmailCfg({ port: parseInt(emailPort.value, 10) || 465 }));
@@ -817,19 +996,19 @@ emailPass?.addEventListener('change', async () => {
   await saveEmailCfg({ pass: v });
   emailPass.value = '';
 });
-emailTo?.addEventListener('change', () => saveEmailCfg({ to: emailTo.value.trim() }));
 emailFollow?.addEventListener('change', () => {
   syncEmailThresholdUI();
   saveEmailCfg({ followAlerts: emailFollow.checked });
 });
 emailThUp?.addEventListener('change', () => saveEmailCfg({ thresholdUp: readThreshold(emailThUp, 3.9) }));
 emailThDown?.addEventListener('change', () => saveEmailCfg({ thresholdDown: readThreshold(emailThDown, 3.9) }));
+
 emailTestBtn?.addEventListener('click', async () => {
   if (emailTestResult) { emailTestResult.textContent = '发送中…'; emailTestResult.style.color = '#94a3b8'; }
   try {
     const r = await window.stockApi.testEmail();
     if (r && r.ok) {
-      emailTestResult.textContent = `已发送到 ${r.to}，请查收（注意垃圾箱）`;
+      emailTestResult.textContent = `已发送到 ${r.to}（${r.count} 个），请查收（注意垃圾箱）`;
       emailTestResult.style.color = '#16a34a';
     } else {
       emailTestResult.textContent = '失败：' + ((r && r.error) || '未知错误');
@@ -840,25 +1019,22 @@ emailTestBtn?.addEventListener('click', async () => {
     emailTestResult.style.color = '#ef4444';
   }
 });
-// 定时汇总开关 / 间隔（后端会按"开关或间隔变化"重置计时基准，避免刚开就发一封）
-emailDigest?.addEventListener('change', () => {
-  syncDigestUI();
-  saveEmailCfg({ digestEnabled: emailDigest.checked });
-});
+
+emailDigest?.addEventListener('change', () => saveMail({ digestEnabled: emailDigest.checked }));
 emailDigestMin?.addEventListener('change', () => {
   let n = parseInt(emailDigestMin.value, 10);
   if (!isFinite(n) || n < 1) n = 1;
   if (n > 1440) n = 1440;
   emailDigestMin.value = n;
-  saveEmailCfg({ digestIntervalMin: n });
+  saveMail({ digestIntervalMin: n });
 });
-// 立即发一封汇总：不等间隔，验证配置是否真的通
+// 立即给当前列表发一封汇总：不等间隔，验证配置是否真的通
 emailDigestNowBtn?.addEventListener('click', async () => {
   if (emailDigestResult) { emailDigestResult.textContent = '发送中…'; emailDigestResult.style.color = '#94a3b8'; }
   try {
-    const r = await window.stockApi.testDigest();
+    const r = await window.stockApi.testDigest(activeId);
     if (r && r.ok) {
-      emailDigestResult.textContent = `已发送 ${r.count} 只行情到 ${r.to}，请查收（注意垃圾箱）`;
+      emailDigestResult.textContent = `已把「${r.list}」的 ${r.count} 只行情发到 ${r.to}`;
       emailDigestResult.style.color = '#16a34a';
     } else {
       emailDigestResult.textContent = '失败：' + ((r && r.error) || '未知错误');
@@ -870,58 +1046,196 @@ emailDigestNowBtn?.addEventListener('click', async () => {
   }
 });
 
-// ---------- 事件 ----------
-document.getElementById('add-btn').addEventListener('click', async () => {
+// ---------- 列表的增删改 ----------
+document.getElementById('new-list-btn')?.addEventListener('click', async () => {
+  const name = prompt('新列表名称（例如：基金 / 港股 / 板块指数）', '列表 ' + (state.lists.length + 1));
+  if (name === null) return;
+  try {
+    const r = await window.stockApi.createList(String(name || '').trim());
+    if (!r || !r.ok) { alert((r && r.error) || '创建失败'); return; }
+    applyListUpdate(r.list);
+    selectList(r.list.id);
+  } catch (e) { alert('创建失败：' + e.message); }
+});
+
+document.getElementById('list-delete')?.addEventListener('click', async () => {
+  const l = activeList();
+  if (!l) return;
+  if (state.lists.length <= 1) { alert('至少要保留一个列表'); return; }
+  if (!confirm(`确定删除列表「${l.name}」？该列表的小组件窗口会关闭，其标的与设置一并移除。`)) return;
+  try {
+    const r = await window.stockApi.deleteList(l.id);
+    if (!r || !r.ok) { alert((r && r.error) || '删除失败'); return; }
+    state.lists = state.lists.filter(x => x.id !== l.id);
+    selectList(state.lists[0].id);
+  } catch (e) { alert('删除失败：' + e.message); }
+});
+
+// 名称：失焦 / 回车时提交
+document.getElementById('list-name')?.addEventListener('change', async (e) => {
+  const v = String(e.target.value || '').trim();
+  if (!v) { renderListMeta(); return; }
+  await saveActive({ name: v });
+  renderTabs();
+  renderListMeta();
+});
+
+document.getElementById('list-visible')?.addEventListener('change', async (e) => {
+  await saveActive({ visible: e.target.checked });
+  renderTabs();
+  renderListMeta();
+});
+
+// ---------- 配置导出 / 导入 ----------
+const ioResult = document.getElementById('io-result');
+function showIo(msg, color) {
+  if (!ioResult) return;
+  ioResult.textContent = msg;
+  ioResult.style.color = color || '#2563eb';
+}
+
+document.getElementById('export-btn')?.addEventListener('click', async () => {
+  const includePass = !!document.getElementById('export-pass')?.checked;
+  showIo('导出中…', '#94a3b8');
+  try {
+    const r = await window.stockApi.exportConfig({ includePass });
+    if (r && r.ok) showIo(`已导出到 ${r.path}${r.includePass ? '（含授权码）' : '（不含授权码）'}`, '#16a34a');
+    else if (r && r.canceled) showIo('');
+    else showIo('导出失败：' + ((r && r.error) || '未知错误'), '#ef4444');
+  } catch (e) { showIo('导出失败：' + e.message, '#ef4444'); }
+});
+
+document.getElementById('import-btn')?.addEventListener('click', async () => {
+  if (!confirm('导入会覆盖当前全部监控列表与邮件设置（原配置会备份为 config.ini.bak）。继续？')) return;
+  showIo('导入中…', '#94a3b8');
+  try {
+    const r = await window.stockApi.importConfig();
+    if (r && r.ok) {
+      showIo(`已导入 ${r.lists} 个列表、共 ${r.symbolCount} 个标的（原配置已备份为 config.ini.bak）`, '#16a34a');
+      await reloadAll();
+    } else if (r && r.canceled) showIo('');
+    else showIo('导入失败：' + ((r && r.error) || '未知错误'), '#ef4444');
+  } catch (e) { showIo('导入失败：' + e.message, '#ef4444'); }
+});
+
+// ---------- 自动更新 ----------
+const updateStatus = document.getElementById('update-status');
+const updateNotes = document.getElementById('update-notes');
+const downloadBtn = document.getElementById('download-update-btn');
+const checkBtn = document.getElementById('check-update-btn');
+
+function fmtSize(n) {
+  if (!n) return '';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+
+// 显示更新状态：有新版才露出「下载并安装」按钮
+function showUpdate(r) {
+  if (!updateStatus) return;
+  if (!r) { updateStatus.textContent = ''; return; }
+  if (!r.ok && r.error) {
+    updateStatus.textContent = r.error;
+    updateStatus.style.color = '#ef4444';
+    if (downloadBtn) downloadBtn.style.display = 'none';
+    return;
+  }
+  if (r.hasNew) {
+    updateStatus.innerHTML = `发现新版本 <b>v${escapeHtml(r.latest)}</b>（当前 v${escapeHtml(r.current)}）`
+      + (r.size ? ` · 安装包 ${fmtSize(r.size)}` : '');
+    updateStatus.style.color = '#2563eb';
+    if (downloadBtn) downloadBtn.style.display = '';
+  } else {
+    updateStatus.textContent = `已是最新版本（v${r.current}）`;
+    updateStatus.style.color = '#16a34a';
+    if (downloadBtn) downloadBtn.style.display = 'none';
+  }
+  if (updateNotes) {
+    updateNotes.textContent = r.notes ? '本次更新内容：\n' + r.notes : '';
+    updateNotes.style.whiteSpace = 'pre-wrap';
+  }
+}
+
+checkBtn?.addEventListener('click', async () => {
+  if (updateStatus) { updateStatus.textContent = '检查中…'; updateStatus.style.color = '#94a3b8'; }
+  try { showUpdate(await window.stockApi.checkUpdate()); }
+  catch (e) { if (updateStatus) { updateStatus.textContent = '检查失败：' + e.message; updateStatus.style.color = '#ef4444'; } }
+});
+
+downloadBtn?.addEventListener('click', async () => {
+  if (!confirm('将从 GitHub 下载安装包并启动安装程序。程序不会自动静默覆盖，需要你在安装向导里确认。继续？')) return;
+  if (updateStatus) { updateStatus.textContent = '下载中…（视网速可能需要一会儿）'; updateStatus.style.color = '#94a3b8'; }
+  downloadBtn.disabled = true;
+  try {
+    const r = await window.stockApi.downloadUpdate();
+    if (r && r.ok) {
+      if (updateStatus) { updateStatus.textContent = `已下载并启动安装程序（${fmtSize(r.size)}），请按向导完成升级`; updateStatus.style.color = '#16a34a'; }
+    } else {
+      if (updateStatus) { updateStatus.textContent = '失败：' + ((r && r.error) || '未知错误'); updateStatus.style.color = '#ef4444'; }
+    }
+  } catch (e) {
+    if (updateStatus) { updateStatus.textContent = '失败：' + e.message; updateStatus.style.color = '#ef4444'; }
+  }
+  downloadBtn.disabled = false;
+});
+
+// ---------- 关于 ----------
+document.getElementById('about-repo')?.addEventListener('click', () => {
+  try { window.stockApi.openRepo?.(); } catch (_) {}
+});
+
+function renderChangelog(list) {
+  const box = document.getElementById('about-changelog');
+  if (!box) return;
+  if (!Array.isArray(list) || list.length === 0) {
+    box.innerHTML = '<div class="cl-empty">暂无记录</div>';
+    return;
+  }
+  box.innerHTML = list.map((it) => `
+    <div class="cl-item">
+      <div class="cl-head"><b>v${escapeHtml(String(it.v || '').replace(/^v/i, ''))}</b><span>${escapeHtml(it.date || '')}</span></div>
+      <ul class="cl-list">${(it.items || []).map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>
+    </div>
+  `).join('');
+}
+
+// ---------- 事件：添加 / 批量 ----------
+document.getElementById('add-btn')?.addEventListener('click', async () => {
   const val = symbolInput.value.trim();
   if (!val) return;
   await addOne(val);
 });
-symbolInput.addEventListener('keydown', async (e) => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    await addOne(symbolInput.value.trim());
-  } else if (e.key === 'Escape') {
-    hideCandidates();
-  }
+symbolInput?.addEventListener('keydown', async (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); await addOne(symbolInput.value.trim()); }
+  else if (e.key === 'Escape') hideCandidates();
 });
-document.getElementById('bulk-add').addEventListener('click', bulkAdd);
-document.getElementById('clear-btn').addEventListener('click', clearAll);
-// 关于：点仓库地址用系统浏览器打开（URL 固定在主进程，不走渲染层跳转）
-document.getElementById('about-repo')?.addEventListener('click', () => {
-  try { window.stockApi.openRepo?.(); } catch (_) {}
-});
+document.getElementById('bulk-add')?.addEventListener('click', bulkAdd);
+document.getElementById('clear-btn')?.addEventListener('click', clearAll);
 
 // ---------- 实时拼音搜索（debounce 250ms）----------
 let searchTimer = null;
 let searchSeq = 0;
 
-// 已经是完整可识别的代码（6 位 A 股 / sh80 / 5 位港股 / hk 前缀），不必再查候选
+// 已经是完整可识别的代码，不必再查候选
 function isCompleteSymbol(v) {
   return /^\d{6}$/.test(v) || /^(sh|sz)\d{6}$/.test(v) || /^\d{5}$/.test(v) || /^hk\d{1,5}$/.test(v);
 }
 
-symbolInput.addEventListener('input', () => {
+symbolInput?.addEventListener('input', () => {
   const v = symbolInput.value.trim().toLowerCase();
   if (searchTimer) clearTimeout(searchTimer);
   if (!v || v.length < 2) { hideCandidates(); return; }
-  // 完整代码直接跳过候选
   if (isCompleteSymbol(v)) { hideCandidates(); return; }
   searchTimer = setTimeout(async () => {
     const seq = ++searchSeq;
     const list = await searchStocks(v, 8);
     if (seq !== searchSeq) return;   // 旧请求丢弃
-    if (list.length > 1) renderCandidates(list);
-    else if (list.length === 1) renderCandidates(list);
-    else hideCandidates();
+    if (list.length) renderCandidates(list); else hideCandidates();
   }, 250);
 });
-symbolInput.addEventListener('blur', () => {
-  setTimeout(hideCandidates, 200);   // 候选被点击前稍作延迟
-});
-symbolInput.addEventListener('focus', () => {
+symbolInput?.addEventListener('blur', () => { setTimeout(hideCandidates, 200); });
+symbolInput?.addEventListener('focus', () => {
   const v = symbolInput.value.trim().toLowerCase();
   if (v.length >= 2 && !isCompleteSymbol(v)) {
-    // 焦点时重新触发搜索（如果之前被 blur 隐藏了）
     clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
       const seq = ++searchSeq;
@@ -932,33 +1246,41 @@ symbolInput.addEventListener('focus', () => {
   }
 });
 
-// ---------- 关于页：版本改动记录 ----------
-// 数据来自主进程的 CHANGELOG 常量（只记 1.4.x），已是最新在前，直接渲染即可
-function renderChangelog(list) {
-  const box = document.getElementById('about-changelog');
-  if (!box) return;
-  if (!Array.isArray(list) || list.length === 0) {
-    box.innerHTML = '<div class="cl-empty">暂无记录</div>';
-    return;
+// ---------- 行情刷新 ----------
+function applyQuotes(data) {
+  lastQuotes = data || [];
+  quotesMap = {};
+  for (const q of lastQuotes) {
+    if (q && q.symbol) quotesMap[String(q.symbol).toLowerCase()] = q;
   }
-  box.innerHTML = list.map((it) => `
-    <div class="cl-item">
-      <div class="cl-head"><b>v${String(it.v || '').replace(/^v/i, '')}</b><span>${it.date || ''}</span></div>
-      <ul class="cl-list">${(it.items || []).map(x => `<li>${x}</li>`).join('')}</ul>
-    </div>
-  `).join('');
+  renderList();
 }
 
-// ---------- 初始化 ----------
-(async function init() {
-  stocks = await window.stockApi.getStocks();
-  renderList();
-  await loadWidgetCfg();   // 载入透明度 / 置顶 / 尺寸 / 切换方式 / 滚动速率 / 跳动间隔
-  await loadAlertsCfg();   // 载入异动提醒配置（邮件阈值回显依赖它，必须排在前面）
-  await loadEmailCfg();    // 载入邮件推送配置
-  await loadIdx();         // 载入大盘指数勾选状态
+window.stockApi?.onQuotes?.((data) => {
+  applyQuotes(data);
+  backfillNames();
+});
 
-  // 版本号 / 发布日期：与"帮助 → 关于"同源，取自打包后的 package.json（不会和安装包对不上）
+// ---------- 初始化 ----------
+async function reloadAll() {
+  try {
+    const s = await window.stockApi.getState();
+    if (s) state = s;
+  } catch (e) { console.error('getState 失败', e); }
+  if (!state.lists || !state.lists.length) {
+    state.lists = [{ id: 'l1', name: '自选股', symbols: [], width: 220, height: 84, alerts: {}, mail: { mailboxes: [1] } }];
+  }
+  if (!activeId || !state.lists.some(l => l.id === activeId)) activeId = state.lists[0].id;
+  renderTabs();
+  renderEmailGlobal();
+  renderSlots();
+  selectList(activeId);   // 会连带渲染 list/meta/appearance/alerts/mail/digest/idx/pos
+}
+
+(async function init() {
+  await reloadAll();
+
+  // 版本号 / 发布日期：与"帮助 → 关于"同源，取自打包后的 package.json
   try {
     const info = await window.stockApi.getAppInfo?.();
     if (info && info.version) {
@@ -973,19 +1295,20 @@ function renderChangelog(list) {
     renderChangelog(info && info.changelog);
   } catch (_) {}
 
-  // 初次拉一次行情（拿到名称后顺带补全列表里的名称）
-  window.stockApi.getQuotes?.().then((d) => {
-    if (d && d.length) {
-      lastQuotes = d;
-      renderList();
-    }
-    backfillNames();   // 用行情名称 / IPC 查名，把"只有代码"的条目补全成名称
-  });
+  // 更新状态（启动时主进程可能已经静默查过一次）
+  try { showUpdate(await window.stockApi.getUpdateState()); } catch (_) {}
 
-  // 实时行情推送（每 30s：刷新价格 + 若有未补全名称则用行情名补）
-  window.stockApi.onQuotes((data) => {
-    lastQuotes = data || [];
-    renderList();
+  // 初次拉一次全量行情缓存
+  try {
+    const d = await window.stockApi.getQuotes();
+    applyQuotes(d);
     backfillNames();
+  } catch (_) {}
+
+  // 从某个小组件右键进来时，主进程会指定要定位的列表（也可能在 URL query 里）
+  const qList = new URLSearchParams(location.search).get('list');
+  if (qList && state.lists.some(l => l.id === qList)) selectList(qList);
+  window.stockApi?.onFocusList?.((id) => {
+    if (state.lists.some(l => l.id === id)) selectList(id);
   });
 })();
