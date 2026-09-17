@@ -14,6 +14,7 @@ let scrollY = 0;            // scroll 模式：当前 translateY
 let rafId = 0;
 let lastTs = 0;
 let jumpTimer = null;
+let soundOn = true;         // 该列表的「提醒提示音」开关（提醒弹窗时用它决定要不要响）
 const flashed = new Map();  // 触发过异动的股票 symbol -> up?（用于闪烁高亮）
 
 const rowsBox = document.getElementById('rows');
@@ -41,7 +42,8 @@ function applyMono(on) {
 window.stockApi?.onOpacity?.(applyOp);
 window.stockApi?.onTextOpacity?.(applyTextOp);
 window.stockApi?.onMono?.(applyMono);
-window.stockApi?.getWidgetConfig?.().then(c => {
+// 每个窗口代表一个监控列表：取自己那一份配置（外观 + 该列表的提醒开关）
+window.stockApi?.getListConfig?.().then(c => {
   if (!c) return;
   if (c.opacity != null) applyOp(c.opacity);
   if (c.textOpacity != null) applyTextOp(c.textOpacity);
@@ -49,12 +51,17 @@ window.stockApi?.getWidgetConfig?.().then(c => {
   if (c.displayMode) setDisplayMode(c.displayMode);
   if (c.scrollMs) setScrollMs(c.scrollMs);
   if (c.jumpMs) setJumpMs(c.jumpMs);
+  if (c.alerts) soundOn = c.alerts.sound !== false;
+  if (c.name) document.title = 'Marketmonitor · ' + c.name;
 }).catch(() => {});
 
 window.stockApi?.onDisplayMode?.((m) => setDisplayMode(m));
 window.stockApi?.onScrollMs?.((ms) => setScrollMs(ms));
 window.stockApi?.onJumpMs?.((ms) => setJumpMs(ms));
-window.stockApi?.onRotationMs?.((ms) => setRotationMs(ms));   // 旧版兼容：一个值管两种模式
+// 列表改名后同步窗口标题（设置页改动即时生效）
+window.stockApi?.onListName?.((name) => {
+  if (name) document.title = 'Marketmonitor · ' + name;
+});
 
 function setDisplayMode(m) {
   displayMode = (m === 'jump') ? 'jump' : 'scroll';
@@ -69,13 +76,6 @@ function setScrollMs(ms) {
 function setJumpMs(ms) {
   jumpMs = Math.max(1000, Math.min(20000, parseInt(ms) || 3000));
   if (displayMode === 'jump') restart();
-}
-// 旧版 rotation-ms：同时设置两者
-function setRotationMs(ms) {
-  const v = Math.max(500, Math.min(60000, parseInt(ms) || 3000));
-  scrollMs = v;
-  jumpMs = v;
-  restart();
 }
 
 // ---------- 工具 ----------
@@ -107,7 +107,7 @@ function buildRow(q) {
   const el = document.createElement('div');
   if (!q) {
     el.className = 'row flat';
-    el.innerHTML = '<div class="empty">无数据 - 右键 设置股票</div>';
+    el.innerHTML = '<div class="empty">无数据 - 右键打开设置</div>';
     return el;
   }
   el.className = 'row ' + clsFromChange(q.changePct);
@@ -267,9 +267,7 @@ window.stockApi?.onAlert?.((a) => {
   }
   if (dot) dot.classList.add('alert');
   showAlertPop(a);
-  if (window.stockApi) {
-    window.stockApi.getAlertsConfig?.().then(c => { if (c && c.sound !== false) beep(a.up); }).catch(() => beep(a.up));
-  }
+  if (soundOn) beep(a.up);
   // 20 秒后停止闪烁
   setTimeout(() => {
     flashed.delete(a.symbol);
@@ -364,15 +362,11 @@ window.stockApi?.onQuotes((data) => {
   restart();
 });
 
-// 初始拉取一次（主进程可能已有缓存）
-window.stockApi?.getQuotes?.().then((data) => {
-  if (data && data.length) {
-    quotes = data;
-    restart();
-  } else {
-    restart();
-  }
-});
+// 初始拉取一次本列表的行情缓存（主进程可能已有）
+window.stockApi?.getListQuotes?.().then((data) => {
+  if (data && data.length) quotes = data;
+  restart();
+}).catch(() => restart());
 
 let resizeTimer = null;
 window.addEventListener('resize', () => {
