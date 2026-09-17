@@ -93,6 +93,9 @@ const INI_TEMPLATE = `; ==================================================
 ;            followAlerts     true=邮件阈值跟随 [alerts]（默认）；false=用下面的独立阈值
 ;            thresholdUp      邮件涨幅阈值(%)，followAlerts=false 时生效
 ;            thresholdDown    邮件跌幅阈值(%)，followAlerts=false 时生效
+;            digestEnabled    true 开启「定时汇总」：每隔 digestIntervalMin 分钟，把当前全部行情
+;                             （自选股 + 大盘指数）汇总成一封邮件发出，与异动推送互不影响
+;            digestIntervalMin 定时汇总间隔（分钟），1~1440，默认 30
 ; ==================================================
 
 [stocks]
@@ -146,6 +149,8 @@ to=
 followAlerts=true
 thresholdUp=3.9
 thresholdDown=3.9
+digestEnabled=false
+digestIntervalMin=30
 `;
 
 // 简单 INI 解析（满足本项目需求即可）
@@ -191,11 +196,20 @@ const DEFAULT_EMAIL = {
   followAlerts: true,      // true = 邮件阈值跟随异动提醒阈值
   thresholdUp: 3.9,        // followAlerts=false 时生效
   thresholdDown: 3.9,
+  digestEnabled: false,    // 定时汇总：每隔 digestIntervalMin 分钟发一封"当前全部行情"
+  digestIntervalMin: 30,   // 汇总间隔（分钟），1~1440
 };
 
 function clampPort(v, fb) {
   const n = parseInt(v, 10);
   return (isFinite(n) && n > 0 && n < 65536) ? n : fb;
+}
+
+// 定时汇总间隔：1~1440 分钟，非法值回退默认
+function clampDigestMin(v) {
+  const n = parseInt(v, 10);
+  if (!isFinite(n) || n < 1) return DEFAULT_EMAIL.digestIntervalMin;
+  return Math.min(1440, n);
 }
 
 function normalizeEmail(raw) {
@@ -220,6 +234,8 @@ function normalizeEmail(raw) {
     followAlerts: bool(r['followAlerts'], DEFAULT_EMAIL.followAlerts),
     thresholdUp: up !== null ? up : DEFAULT_EMAIL.thresholdUp,
     thresholdDown: down !== null ? down : DEFAULT_EMAIL.thresholdDown,
+    digestEnabled: bool(r['digestEnabled'], DEFAULT_EMAIL.digestEnabled),
+    digestIntervalMin: clampDigestMin(r['digestIntervalMin']),
   };
 }
 
@@ -438,6 +454,8 @@ function saveConfig() {
     lines.push('followAlerts=' + (m.followAlerts !== false ? 'true' : 'false'));
     lines.push('thresholdUp=' + (m.thresholdUp ?? DEFAULT_EMAIL.thresholdUp));
     lines.push('thresholdDown=' + (m.thresholdDown ?? DEFAULT_EMAIL.thresholdDown));
+    lines.push('digestEnabled=' + (m.digestEnabled ? 'true' : 'false'));
+    lines.push('digestIntervalMin=' + (m.digestIntervalMin ?? DEFAULT_EMAIL.digestIntervalMin));
     lines.push('');
     fs.writeFileSync(CONFIG_PATH, lines.join('\n'), 'utf8');
   } catch (_) {}
@@ -838,6 +856,129 @@ async function sendTestMail() {
     return { ok: true, to: e.to };
   } catch (err) {
     writeMailLog(`[${new Date().toISOString()}] FAIL (测试) -> ${e.to}：${err.message}`);
+    return { ok: false, error: err.message };
+  }
+}
+
+// ---------- 邮件定时汇总（digest）----------
+// 用户要求：每隔 N 分钟，把"当前全部行情"（自选股 + 大盘指数）汇总成一封邮件发出，开关可选。
+// 实现取舍：不另起 setInterval —— 多一个定时器就多一处泄漏/暂停点，
+// 直接复用已有的 30s tick，用时间戳判定"到点没到点"即可。
+// lastDigestTs 在「开启汇总 / 改间隔」时重置，避免刚打开就立刻收到一封。
+
+// 中文按 2 列宽计算，让纯文本表格在邮件客户端里能对齐
+function dispWidth(s) {
+  let w = 0;
+  for (const ch of String(s)) {
+    w += /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch) ? 2 : 1;
+  }
+  return w;
+}
+function padEndW(s, n) {
+  const str = String(s);
+  const w = dispWidth(str);
+  return w >= n ? str : str + ' '.repeat(n - w);
+}
+
+// 汇总邮件正文：等宽表格（名称/代码/现价/涨跌幅）+ 涨跌家数小结
+function buildDigestMail(quotes) {
+  const list = (quotes || []).filter(q => q && q.symbol);
+  if (!list.length) return null;
+  const bj = new Date(Date.now() + 8 * 3600 * 1000);
+  const tstr = bj.toISOString().replace('T', ' ').slice(0, 19);
+  const rows = list.map(q => {
+    const pct = parseFloat(q.changePct) || 0;
+    return {
+      name: String(q.name || q.symbol),
+      code: String(q.symbol),
+      price: Number(q.price) || 0,
+      pct,
+    };
+  });
+  const wName = Math.max(8, ...rows.map(r => dispWidth(r.name))) + 2;
+  const wCode = Math.max(8, ...rows.map(r => r.code.length)) + 2;
+  const up = rows.filter(r => r.pct > 0).length;
+  const down = rows.filter(r => r.pct < 0).length;
+  const flat = rows.length - up - down;
+  const body = rows.map(r => {
+    const sign = r.pct > 0 ? '+' : '';
+    return '  ' + padEndW(r.name, wName) + padEndW(r.code, wCode)
+      + padEndW(r.price.toFixed(2), 10) + sign + r.pct.toFixed(2) + '%';
+  });
+  const subject = `[Marketmonitor] 行情汇总 ${tstr.slice(11, 16)}（${rows.length} 只）`;
+  const text = [
+    `行情汇总（北京时间 ${tstr}）`,
+    '',
+    '  ' + padEndW('名称', wName) + padEndW('代码', wCode) + padEndW('现价', 10) + '涨跌幅',
+    '  ' + '-'.repeat(wName + wCode + 16),
+    ...body,
+    '',
+    `共 ${rows.length} 只：上涨 ${up} / 下跌 ${down} / 平盘 ${flat}`,
+    '',
+    '—— 由 Marketmonitor 桌面行情小组件定时汇总发送（间隔可在「设置 → 邮件推送」调整）',
+  ].join('\n');
+  return { subject, text };
+}
+
+let lastDigestTs = 0;
+
+// 重置汇总计时基准（开启/改间隔/关闭时调用）
+function resetDigestTimer() { lastDigestTs = Date.now(); }
+
+// tick 内调用：到点就排一封汇总进队列。返回本次是否真的发出
+function checkDigest(quotes) {
+  const e = store.email || DEFAULT_EMAIL;
+  if (!e.digestEnabled || !mailCfgReady()) return false;
+  const now = Date.now();
+  if (!lastDigestTs) { lastDigestTs = now; return false; }   // 首次只对齐时间基准，不立刻发
+  const iv = clampDigestMin(e.digestIntervalMin) * 60000;
+  if (now - lastDigestTs < iv) return false;
+  lastDigestTs = now;
+  queueDigestMail(quotes);
+  return true;
+}
+
+function queueDigestMail(quotes) {
+  const e = store.email || DEFAULT_EMAIL;
+  const to = String(e.to || '').split(',').map(s => s.trim()).filter(Boolean);
+  const mail = buildDigestMail(quotes);
+  if (!to.length || !mail) return;
+  mailQueue = mailQueue
+    .then(() => smtpSend({
+      host: e.host, port: e.port, secure: e.secure,
+      user: e.user, pass: e.pass, from: e.user, to,
+      subject: mail.subject, text: mail.text,
+    }))
+    .then(() => {
+      console.log('[mail] 已发送汇总:', mail.subject, '->', e.to);
+      writeMailLog(`[${new Date().toISOString()}] OK   ${mail.subject} -> ${e.to}`);
+    })
+    .catch((err) => {
+      logErr('sendDigestMail', err);
+      writeMailLog(`[${new Date().toISOString()}] FAIL ${mail.subject} -> ${e.to}：${err.message}`);
+    });
+}
+
+// 设置页「立即发一封汇总」：不等间隔，用当前行情直接发一封，返回可读结果
+async function sendDigestNow() {
+  const e = store.email || DEFAULT_EMAIL;
+  if (!mailCfgReady()) {
+    return { ok: false, error: '请先填写 SMTP 服务器、账号、授权码和收件人，并勾选「启用邮件推送」' };
+  }
+  const list = (lastQuotes || []).filter(q => q && q.symbol);
+  if (!list.length) return { ok: false, error: '还没有行情数据，等一次刷新（约 30 秒）后再试' };
+  const to = String(e.to || '').split(',').map(s => s.trim()).filter(Boolean);
+  const mail = buildDigestMail(list);
+  try {
+    await smtpSend({
+      host: e.host, port: e.port, secure: e.secure,
+      user: e.user, pass: e.pass, from: e.user, to,
+      subject: mail.subject, text: mail.text,
+    });
+    writeMailLog(`[${new Date().toISOString()}] OK   (汇总) -> ${e.to}`);
+    return { ok: true, to: e.to, count: list.length };
+  } catch (err) {
+    writeMailLog(`[${new Date().toISOString()}] FAIL (汇总) -> ${e.to}：${err.message}`);
     return { ok: false, error: err.message };
   }
 }
@@ -1260,6 +1401,7 @@ async function tick() {
     checkAlerts(quotes);
     checkEmailAlerts(quotes);   // 邮件推送：独立阈值与冷却，与上一条通道互不影响
   }
+  checkDigest(quotes);          // 定时汇总：按时间戳判定，与异动推送完全独立（首帧也会对齐基准）
   if (widgetWindow && !widgetWindow.isDestroyed()) {
     widgetWindow.webContents.send('quotes', quotes);
   }
@@ -1332,16 +1474,24 @@ ipcMain.handle('save-email-config', (_e, cfg) => {
   const c = cfg || {};
   const merged = { ...cur };
   for (const k of ['enabled', 'host', 'port', 'secure', 'user', 'to',
-                   'followAlerts', 'thresholdUp', 'thresholdDown']) {
+                   'followAlerts', 'thresholdUp', 'thresholdDown',
+                   'digestEnabled', 'digestIntervalMin']) {
     if (c[k] !== undefined) merged[k] = c[k];
   }
   if (typeof c.pass === 'string' && c.pass !== '') merged.pass = c.pass;
   if (c.pass === null) merged.pass = '';           // 显式传 null = 清空授权码
-  store.email = normalizeEmail(merged);
+  const next = normalizeEmail(merged);
+  // 只有"汇总开关 / 汇总间隔"变了才重置计时基准：
+  // 否则用户单纯改个阈值也会把本该 1 分钟后发出的汇总推迟整整一轮。
+  const digestChanged = (next.digestEnabled !== cur.digestEnabled)
+    || (next.digestIntervalMin !== cur.digestIntervalMin);
+  store.email = next;
+  if (digestChanged) resetDigestTimer();
   saveConfig();
   return emailForUi();
 });
 ipcMain.handle('test-email', () => sendTestMail());
+ipcMain.handle('test-digest', () => sendDigestNow());
 // 手动测试提醒（设置页"试一下"用）：直接用当前真实行情判定，不走冷却
 ipcMain.handle('test-alert', () => {
   const demo = (lastQuotes || []).slice(0, 1).map(q => ({
@@ -1585,6 +1735,15 @@ const REPO_URL = 'https://github.com/yohoky/marketmonitor';
 // 版本改动记录（只记 1.4.x，1.4.0 之前不收录）——设置页「关于」卡片直接渲染本数组。
 // 以后发新版只需在最前面加一条，渲染逻辑不用动。
 const CHANGELOG = [
+  {
+    v: '1.4.5', date: '2026-09-17',
+    items: [
+      '新增邮件定时汇总：可选开关，每隔 N 分钟（1~1440，默认 30）把当前全部行情发到通知邮箱',
+      '汇总邮件为等宽表格（名称/代码/现价/涨跌幅）+ 涨跌家数小结，支持「立即发一封汇总」手动测试',
+      '「当前监控列表」新增一键置底，与一键置顶配套，把某只快速挪到末尾',
+      '清理设置页示例邮箱文案，改为明显非真实的占位样式',
+    ],
+  },
   {
     v: '1.4.4', date: '2026-09-17',
     items: [

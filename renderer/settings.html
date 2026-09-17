@@ -13,7 +13,7 @@
         <h1 data-page-node-id="Ui95GPQOlEMDTA1OLNyyxR">Marketmonitor 设置</h1>
         <p class="sub">添加或批量粘贴 股票 / 基金 / 可转债 / 港股 代码，名称自动补全，保存后小组件立即生效</p>
       </div>
-      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）" data-page-node-id="eoNFQWZuFvU6k6DCqusIQR">v1.4.4</span>
+      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）" data-page-node-id="eoNFQWZuFvU6k6DCqusIQR">v1.4.5</span>
     </header>
 
     <section class="card" data-page-node-id="eTqzjpdmK5qPVil5MmETzP">
@@ -213,7 +213,7 @@
       </div>
       <div class="size-row" style="margin-top:8px">
         <label class="size-label">发件邮箱
-          <input type="text" id="email-user" placeholder="you@qq.com" style="width:180px" autocomplete="off" />
+          <input type="text" id="email-user" placeholder="请输入发件邮箱" style="width:180px" autocomplete="off" />
         </label>
         <label class="size-label">授权码
           <input type="password" id="email-pass" placeholder="留空表示不修改" style="width:150px" autocomplete="new-password" />
@@ -222,7 +222,7 @@
       </div>
       <div class="size-row" style="margin-top:8px">
         <label class="size-label" style="flex:1 1 auto">收件邮箱
-          <input type="text" id="email-to" placeholder="多个用英文逗号分隔，如 a@qq.com,b@163.com" style="width:100%" autocomplete="off" />
+          <input type="text" id="email-to" placeholder="多个用英文逗号分隔" style="width:100%" autocomplete="off" />
         </label>
       </div>
       <div class="size-row" style="margin-top:8px">
@@ -237,6 +237,20 @@
         </label>
         <span class="card-desc">% 才发邮件</span>
       </div>
+      <div class="size-row" style="margin-top:8px">
+        <label class="chk-label" style="flex:0 0 auto;min-width:186px">
+          <input type="checkbox" id="email-digest" /> 定时汇总推送
+        </label>
+        <label class="size-label">每
+          <input type="number" id="email-digest-min" min="1" max="1440" step="1" style="width:80px" /> 分钟
+        </label>
+        <button id="email-digest-now" class="btn ghost">立即发一封汇总</button>
+        <span id="email-digest-result" class="card-desc"></span>
+      </div>
+      <div class="card-desc" style="margin-top:4px">
+        勾选后，每隔设定分钟数把<b>当前全部行情</b>（自选股 + 大盘指数）汇总成一封邮件发出；间隔 1~1440 分钟。<br/>
+        与上面的异动推送<b>互不影响</b>：异动是"到阈值才发"，汇总是"到点就发"，两条通道各自独立计时。
+      </div>
       <div class="card-desc" style="margin-top:6px">
         阈值默认与异动提醒一致；取消勾选后可单独设置（例如异动 3.9% 就提醒，邮件只在 6% 才发）。<br/>
         <b>授权码不是登录密码</b>：QQ / 163 邮箱需先到邮箱「设置 → 账户」开启 SMTP 服务并生成授权码。<br/>
@@ -245,9 +259,9 @@
     </section>
 
     <section class="card" id="about-card">
-      <div class="card-title"><span class="bar"></span>关于 <span class="badge" id="about-ver">v1.4.4</span></div>
+      <div class="card-title"><span class="bar"></span>关于 <span class="badge" id="about-ver">v1.4.5</span></div>
       <div class="size-row">
-        <span class="card-desc" style="flex:0 0 auto;min-width:170px">版本号　<b id="about-version">v1.4.4</b></span>
+        <span class="card-desc" style="flex:0 0 auto;min-width:170px">版本号　<b id="about-version">v1.4.5</b></span>
         <span class="card-desc">发布日期　<b id="about-builddate">—</b></span>
       </div>
       <div class="card-desc" style="margin-top:6px">

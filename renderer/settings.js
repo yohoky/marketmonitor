@@ -72,6 +72,7 @@ function renderList() {
         <button class="s-top" data-idx="${idx}" title="一键置顶（移到最前）" ${idx === 0 ? 'disabled' : ''}>⇧</button>
         <button class="s-up" data-idx="${idx}" title="上移" ${idx === 0 ? 'disabled' : ''}>↑</button>
         <button class="s-down" data-idx="${idx}" title="下移" ${idx === stocks.length - 1 ? 'disabled' : ''}>↓</button>
+        <button class="s-bottom" data-idx="${idx}" title="一键置底（移到末尾）" ${idx === stocks.length - 1 ? 'disabled' : ''}>⇩</button>
       </div>
       <button class="s-del" data-idx="${idx}" title="删除">×</button>
     `;
@@ -113,6 +114,17 @@ function renderList() {
       const i = +e.currentTarget.dataset.idx;
       if (i >= stocks.length - 1) return;
       [stocks[i], stocks[i + 1]] = [stocks[i + 1], stocks[i]];
+      await window.stockApi.saveStocks(stocks);
+      renderList();
+    });
+  });
+  // 一键置底：把该条移到列表末尾，其余保持原有相对顺序（与一键置顶对称）
+  listEl.querySelectorAll('.s-bottom').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      const i = +e.currentTarget.dataset.idx;
+      if (i >= stocks.length - 1) return;
+      const [item] = stocks.splice(i, 1);
+      stocks.push(item);
       await window.stockApi.saveStocks(stocks);
       renderList();
     });
@@ -500,6 +512,10 @@ const emailThUp = document.getElementById('email-threshold-up');
 const emailThDown = document.getElementById('email-threshold-down');
 const emailTestBtn = document.getElementById('email-test');
 const emailTestResult = document.getElementById('email-test-result');
+const emailDigest = document.getElementById('email-digest');
+const emailDigestMin = document.getElementById('email-digest-min');
+const emailDigestNowBtn = document.getElementById('email-digest-now');
+const emailDigestResult = document.getElementById('email-digest-result');
 let emailCfg = {};
 
 // 跟随异动阈值时，独立阈值输入框置灰并回显当前异动阈值
@@ -517,6 +533,13 @@ function syncEmailThresholdUI() {
   }
 }
 
+// 汇总开关关闭时，间隔输入框与「立即发一封」置灰，避免误以为已经生效
+function syncDigestUI() {
+  const on = !!(emailDigest && emailDigest.checked);
+  if (emailDigestMin) emailDigestMin.disabled = !on;
+  if (emailDigestNowBtn) emailDigestNowBtn.disabled = !on;
+}
+
 async function loadEmailCfg() {
   try {
     const c = await window.stockApi.getEmailConfig();
@@ -531,12 +554,15 @@ async function loadEmailCfg() {
   if (emailFollow) emailFollow.checked = emailCfg.followAlerts !== false;
   if (emailThUp) emailThUp.value = emailCfg.thresholdUp ?? 3.9;
   if (emailThDown) emailThDown.value = emailCfg.thresholdDown ?? 3.9;
+  if (emailDigest) emailDigest.checked = !!emailCfg.digestEnabled;
+  if (emailDigestMin) emailDigestMin.value = emailCfg.digestIntervalMin || 30;
   if (emailPass) emailPass.value = '';
   if (emailPassHint) {
     emailPassHint.textContent = emailCfg.hasPass ? '已保存授权码（留空则不修改）' : '尚未设置授权码';
     emailPassHint.style.color = emailCfg.hasPass ? '#16a34a' : '#94a3b8';
   }
   syncEmailThresholdUI();
+  syncDigestUI();
 }
 
 async function saveEmailCfg(patch) {
@@ -812,6 +838,35 @@ emailTestBtn?.addEventListener('click', async () => {
   } catch (e) {
     emailTestResult.textContent = '失败：' + e.message;
     emailTestResult.style.color = '#ef4444';
+  }
+});
+// 定时汇总开关 / 间隔（后端会按"开关或间隔变化"重置计时基准，避免刚开就发一封）
+emailDigest?.addEventListener('change', () => {
+  syncDigestUI();
+  saveEmailCfg({ digestEnabled: emailDigest.checked });
+});
+emailDigestMin?.addEventListener('change', () => {
+  let n = parseInt(emailDigestMin.value, 10);
+  if (!isFinite(n) || n < 1) n = 1;
+  if (n > 1440) n = 1440;
+  emailDigestMin.value = n;
+  saveEmailCfg({ digestIntervalMin: n });
+});
+// 立即发一封汇总：不等间隔，验证配置是否真的通
+emailDigestNowBtn?.addEventListener('click', async () => {
+  if (emailDigestResult) { emailDigestResult.textContent = '发送中…'; emailDigestResult.style.color = '#94a3b8'; }
+  try {
+    const r = await window.stockApi.testDigest();
+    if (r && r.ok) {
+      emailDigestResult.textContent = `已发送 ${r.count} 只行情到 ${r.to}，请查收（注意垃圾箱）`;
+      emailDigestResult.style.color = '#16a34a';
+    } else {
+      emailDigestResult.textContent = '失败：' + ((r && r.error) || '未知错误');
+      emailDigestResult.style.color = '#ef4444';
+    }
+  } catch (e) {
+    emailDigestResult.textContent = '失败：' + e.message;
+    emailDigestResult.style.color = '#ef4444';
   }
 });
 

@@ -157,7 +157,9 @@ body {
 }
 .stock-list li {
   display: grid;
-  grid-template-columns: minmax(0,1fr) auto auto auto 44px 26px;
+  /* 排序组用 auto 而不是写死宽度：v1.4.5 起有 4 个按钮（置顶/上移/下移/置底），
+     写死 44px 会溢出压到删除按钮上 */
+  grid-template-columns: minmax(0,1fr) auto auto auto auto 26px;
   gap: 10px;
   align-items: center;
   padding: 9px 11px;

@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('stockApi', {
   getEmailConfig: () => ipcRenderer.invoke('get-email-config'),
   saveEmailConfig: (cfg) => ipcRenderer.invoke('save-email-config', cfg),
   testEmail: () => ipcRenderer.invoke('test-email'),
+  // 定时汇总：立即发一封当前全量行情（不等间隔）
+  testDigest: () => ipcRenderer.invoke('test-digest'),
   // 版本信息（关于页显示版本号 + 发布日期）
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
   openRepo: () => ipcRenderer.invoke('open-repo'),
