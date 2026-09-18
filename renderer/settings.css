@@ -234,6 +234,7 @@ body {
 .row-ctrl input,
 textarea,
 .size-label input[type="number"],
+.size-label input[type="text"],
 .size-label select {
   flex: 1;
   padding: 9px 12px;
@@ -254,6 +255,7 @@ textarea,
 .row-ctrl input::placeholder, textarea::placeholder { color: #aab3c5; }
 .row-ctrl input:focus, textarea:focus,
 .size-label input[type="number"]:focus,
+.size-label input[type="text"]:focus,
 .size-label select:focus {
   border-color: var(--primary);
   box-shadow: var(--ring);
@@ -571,6 +573,24 @@ textarea {
 }
 .idx-search::placeholder { color: var(--muted); }
 .idx-search:focus { border-color: var(--primary-2); box-shadow: var(--ring); background: #fff; }
+
+/* 手动添加指数：清单只收常用项，其余由用户按代码自加 */
+.idx-manual { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.idx-manual-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfcfe;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.idx-manual-input::placeholder { color: var(--muted); }
+.idx-manual-input:focus { border-color: var(--primary-2); box-shadow: var(--ring); background: #fff; }
+.idx-manual-msg { margin-top: 6px; font-size: 12px; color: var(--muted); min-height: 16px; }
 
 .idx-grid {
   display: flex;

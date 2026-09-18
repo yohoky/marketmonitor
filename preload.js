@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('stockApi', {
   getQuotes: () => ipcRenderer.invoke('get-quote-cache'),
   getListQuotes: (id) => ipcRenderer.invoke('get-list-quotes', id || MY_LIST),
   fetchStockName: (symbol) => ipcRenderer.invoke('fetch-stock-name', symbol),
+  probeIndex: (raw) => ipcRenderer.invoke('probe-index', raw),
   onQuotes: (cb) => on('quotes', cb),
   onAlert: (cb) => on('alert', cb),
 

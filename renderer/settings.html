@@ -13,7 +13,7 @@
         <h1>Marketmonitor 设置</h1>
         <p class="sub">每个「监控列表」是一个独立的悬浮小窗口，可分别监控自选股 / 板块指数 / 基金等，互不干扰</p>
       </div>
-      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）">v1.5.2</span>
+      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）">v1.5.3</span>
     </header>
 
     <!-- ============ 列表切换 ============ -->
@@ -149,8 +149,13 @@
 
     <section class="card" id="index-card">
       <div class="card-title"><span class="bar"></span>指数库 <span class="badge" id="index-count">0</span></div>
-      <div class="card-desc">宽基 / 行业板块 / 主题概念指数，勾选即加入<b>当前列表</b>；同样参与滚动 / 跳动与异动提醒（含邮件推送）。</div>
+      <div class="card-desc">宽基 / 行业板块 / 主题概念指数，勾选即加入<b>当前列表</b>；同样参与滚动 / 跳动与异动提醒（含邮件推送）。<br>这里只收常用指数（全市场可取到行情的指数有 700+），想要的没在清单里就在下面<b>手动添加</b>。</div>
       <input type="text" id="idx-search" class="idx-search" placeholder="搜索指数：名称或代码，如 科创 / 白酒 / sz399997" autocomplete="off" />
+      <div class="idx-manual" id="idx-manual">
+        <input type="text" id="idx-manual-input" class="idx-manual-input" placeholder="手动添加：输入代码，如 000300 或 sz399997 或 hkHSI" autocomplete="off" />
+        <button id="idx-manual-btn" class="btn ghost btn-sm">校验并添加</button>
+      </div>
+      <div class="idx-manual-msg" id="idx-manual-msg"></div>
       <div class="idx-grid" id="idx-grid"></div>
     </section>
 
@@ -273,13 +278,28 @@
         <label class="chk-label" style="flex:0 0 auto;min-width:186px">
           <input type="checkbox" id="email-digest" /> 定时汇总推送
         </label>
-        <label class="size-label">每
-          <input type="number" id="email-digest-min" min="1" max="1440" step="1" style="width:80px" /> 分钟
+        <label class="size-label">方式
+          <select id="email-digest-mode">
+            <option value="fixed">按固定时点</option>
+            <option value="interval">按间隔</option>
+          </select>
         </label>
-        <span class="card-desc" id="digest-hint"></span>
+        <label class="size-label" id="digest-interval-label" style="display:none">每
+          <input type="number" id="email-digest-min" min="1" max="1440" step="1" style="width:80px;flex:none" /> 分钟
+        </label>
       </div>
+      <div class="size-row" id="digest-times-row" style="margin-top:2px">
+        <label class="size-label" style="flex:1;min-width:0">时点
+          <input type="text" id="email-digest-times" autocomplete="off" style="min-width:0"
+                 placeholder="09:30,09:35,09:55,14:35,14:48,14:54" />
+        </label>
+      </div>
+      <span class="card-desc" id="digest-hint" style="display:block;margin-top:6px"></span>
+      <span class="card-desc" style="display:block;margin-top:4px">另外，<b>上午收盘 11:30</b> 与 <b>下午收盘 15:00</b> 会各发一封<b>收盘小结</b>（含平均涨跌幅与领涨 / 领跌），这两种发送方式下都会发。</span>
       <div class="card-desc" style="margin-top:6px">
-        勾选后，每隔设定分钟数把<b>当前列表的全部行情</b>汇总成一封邮件发出（间隔 1~1440 分钟）。<br/>
+        <b>按固定时点</b>：每天在设定的时点各推一封（默认 09:30 / 09:35 / 09:55 / 14:35 / 14:48 / 14:54，逗号分隔，可自行增删）。<br/>
+        只在大盘开盘窗口内推送（上午 09:25–11:35、下午 13:00–15:05），<b>11:35–13:00 午休期间不发</b>；某个时点没赶上（电脑休眠 / 程序没开）会在同一交易时段内补推最近一次，跨时段与收盘后不补。<br/>
+        <b>按间隔</b>：每隔设定分钟数推一封（1~1440 分钟），与原先一致。<br/>
         汇总邮件是手机友好的卡片排版，涨红跌绿；同时附带纯文本版，老邮箱客户端也能正常看。<br/>
         与异动推送<b>互不影响</b>：异动是"到阈值才发"，汇总是"到点就发"，两条通道各自独立计时。<br/>
         <b>授权码不是登录密码</b>：QQ / 163 邮箱需先到邮箱「设置 → 账户」开启 SMTP 服务并生成授权码。<br/>
@@ -306,9 +326,9 @@
     </section>
 
     <section class="card" id="about-card">
-      <div class="card-title"><span class="bar"></span>关于与更新 <span class="badge" id="about-ver">v1.5.2</span></div>
+      <div class="card-title"><span class="bar"></span>关于与更新 <span class="badge" id="about-ver">v1.5.3</span></div>
       <div class="size-row">
-        <span class="card-desc" style="flex:0 0 auto;min-width:170px">当前版本　<b id="about-version">v1.5.2</b></span>
+        <span class="card-desc" style="flex:0 0 auto;min-width:170px">当前版本　<b id="about-version">v1.5.3</b></span>
         <span class="card-desc">发布日期　<b id="about-builddate">—</b></span>
       </div>
       <div class="size-row" style="margin-top:8px">

@@ -1,7 +1,7 @@
 {
   "name": "marketmonitor",
   "productName": "Marketmonitor",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "buildDate": "2026-09-17",
   "description": "Windows 悬浮行情小组件（A股/基金/可转债/港股/板块指数）：多监控列表各自独立悬浮窗 + 1~5 个收件邮箱可分别指定 + 邮件定时汇总（手机友好 HTML 卡片，涨红跌绿）+ 配置导出导入 + 客户端自动更新 + 滚动/跳动切换 + 异动提醒（系统通知/提示音/邮件）+ 背景与文字透明度分别可调 + 黑白摸鱼模式",
   "main": "main.js",

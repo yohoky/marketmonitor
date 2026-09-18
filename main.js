@@ -99,9 +99,13 @@ const INI_TEMPLATE = `; ==================================================
 ;            alertMarket      a(A股) / hk(港股) / both(两者)，决定按哪个市场的开盘时段静默
 ;                             A股 09:25–11:35 / 12:55–15:05，港股 09:00–12:00 / 13:00–16:00，周末除外
 ;            mailboxes        该列表的收件邮箱槽位，如 1,3（对应 [email] 的 boxN）
-;            digestEnabled    true 该列表开启「定时汇总」：每隔 digestIntervalMin 分钟，
-;                             把该列表当前的全部行情汇总成一封邮件发出，与异动推送互不影响
-;            digestIntervalMin 定时汇总间隔（分钟），1~1440，默认 30
+;            digestEnabled    true 该列表开启「定时汇总」，与异动推送互不影响
+;            digestMode       fixed(默认) 按固定时点推送 / interval 每隔 N 分钟推送一次
+;            digestTimes      固定时点的时刻表，逗号分隔，默认 09:30,09:35,09:55,14:35,14:48,14:54
+;                             仅在开盘窗口内推送（上午 09:25–11:35、下午 13:00–15:05）；
+;                             11:35–13:00 午休期间一封都不发；某个时点没赶上（电脑休眠 / 程序没开）
+;                             会在同一个交易时段内补推最近一次，跨时段或收盘后不补，避免打扰
+;            digestIntervalMin interval 模式下的间隔（分钟），1~1440，默认 30
 ;
 ;  [list:xx] 段可以复制多份（xx 只要互不相同即可），书写顺序 = 列表显示顺序。
 ;  下面这一段是空列表示例：把标的行加在设置下面即可（一行一个），
@@ -157,6 +161,8 @@ alertMarket=a
 mailboxes=1
 digestEnabled=false
 digestIntervalMin=30
+digestMode=fixed
+digestTimes=09:30,09:35,09:55,14:35,14:48,14:54
 ;  ↓↓↓ 在这里写标的，一行一个，例如：600519 贵州茅台 / 000001 / hk00981 ↓↓↓
 ;  600519 贵州茅台
 ;  000001 平安银行
@@ -449,10 +455,35 @@ const LIST_WIN_DEFAULTS = {
   position: { x: 0, y: 0 }, visible: true,
 };
 
+// 定时汇总的两种模式：
+//   fixed    —— 按固定时点推（默认）
+//   interval —— 每隔 digestIntervalMin 分钟推一次（原有行为，逻辑保持不动）
+const DEFAULT_DIGEST_MODE = 'fixed';
+// 默认时点：开盘 3 次（看早盘）+ 尾盘 3 次（看收盘）。间隔刻意不均匀 —— 用户指定的口径。
+const DEFAULT_DIGEST_TIMES = '09:30,09:35,09:55,14:35,14:48,14:54';
+// 固定时点允许推送的窗口（北京时间 HHMM）：
+//   上午 09:25–11:35（开盘前 5 分钟 ~ 收盘后 5 分钟）
+//   下午 13:00–15:05（开盘 ~ 收盘后 5 分钟）
+// 下午从 1300 起算而不是 1255 —— 用户明确要求 11:35–13:00 午休期间一封都不发。
+const DIGEST_WINDOWS = [[925, 1135], [1300, 1505]];
+
+// 收盘总结：上午收盘 11:30、下午收盘 15:00 各发一封（用户 2026-09-18 要求）。
+// 关键取舍：**不放进 digestTimes**，也不受 digestMode 影响 —— 用户原话是"不管哪种发送方式，
+// 在当天上午和下午的收盘时刻，都要发一封总结邮件"。若做成 digestTimes 里的一项，
+// 用户编辑时点表时就会把它删掉；做成固定常量才能保证"无论怎么配都发"。
+// 两个时刻都在 DIGEST_WINDOWS 内（11:30 ≤ 11:35、15:00 ≤ 15:05），因此天然继承
+// "只在开盘窗口内推 + 同一交易时段内补推"这两条既有规则。
+const CLOSE_SLOTS = [
+  { hm: 1130, label: '11:30', kind: 'morning', title: '上午收盘' },
+  { hm: 1500, label: '15:00', kind: 'day', title: '全天收盘' },
+];
+
 const DEFAULT_LIST_MAIL = {
   mailboxes: [1],            // 默认投到第 1 个收件槽位
   digestEnabled: false,
   digestIntervalMin: DEFAULT_DIGEST_MIN,
+  digestMode: DEFAULT_DIGEST_MODE,
+  digestTimes: DEFAULT_DIGEST_TIMES,
 };
 
 // 列表数量上限：窗口太多既挤屏幕也容易误操作，给个明确上限
@@ -484,6 +515,24 @@ function normalizeSymbolLine(line) {
   return { symbol: sym, name: name || sym };
 }
 
+// 指数代码归一化（规则与个股**不同**：6 位里 000xxx 是【上证/中证指数】而不是深市个股东代码）。
+// 形状与 renderer/settings.js 的 looksLikeIndex() 保持一致，避免"手动加进去了、指数库里却看不见"。
+// sh93xxxx（中证新代码段）保留通道：腾讯行情目前一个号都取不到，但格式合法 ——
+// 交给真实行情校验去拒绝，比在这里写死一句"格式不对"更诚实。
+function normalizeIndexCode(raw) {
+  let s = String(raw == null ? '' : raw).trim().toLowerCase().replace(/\s+/g, '');
+  if (!s) return null;
+  if (!/^(sh|sz)\d{6}$/.test(s) && !/^hk[a-z]+$/.test(s)) {
+    if (!/^\d{6}$/.test(s)) return null;
+    if (s.startsWith('399') || s.startsWith('980')) s = 'sz' + s;
+    else if (s.startsWith('000') || s.startsWith('93')) s = 'sh' + s;
+    else return null;                      // 其它 6 位看着是个股/基金，不是指数
+  }
+  // 形状：sh000xxx / sh93xxxx（中证新段，93 + 4 位）/ sz399xxx / sz980xxx / hk*
+  const ok = /^sh(000\d{3}|93\d{4})$/.test(s) || /^sz(399\d{3}|980\d{3})$/.test(s) || /^hk[a-z]+$/.test(s);
+  return ok ? s : null;
+}
+
 // 列表的邮件路由：mailboxes 是「[email] 收件槽位序号」数组（1 起）。
 // 三种情况要分清楚（关系到"列表不发给任何人"这个选择能不能存住）：
 //   键没写过 / 传 undefined  → 默认 [1]（老配置升级后行为不变）
@@ -508,6 +557,9 @@ function normalizeMail(raw) {
     mailboxes: arr,
     digestEnabled: bool(r.digestEnabled, DEFAULT_LIST_MAIL.digestEnabled),
     digestIntervalMin: clampDigestMin(r.digestIntervalMin),
+    // 老配置没有这个字段 → 按默认 'fixed'（用户 2026-09-18 要求改用固定时点）
+    digestMode: (String(r.digestMode) === 'interval' ? 'interval' : DEFAULT_DIGEST_MODE),
+    digestTimes: normalizeDigestTimes(r.digestTimes),
   };
 }
 
@@ -579,6 +631,10 @@ function normalizeList(raw, id, fallbackName) {
       mailboxes: r.mailboxes !== undefined ? r.mailboxes : nestedMail.mailboxes,
       digestEnabled: r.digestEnabled !== undefined ? r.digestEnabled : nestedMail.digestEnabled,
       digestIntervalMin: r.digestIntervalMin !== undefined ? r.digestIntervalMin : nestedMail.digestIntervalMin,
+      // 这两个必须是「平铺优先、否则取 mail 子对象」——save-list 传进来的就是 { mail: {...} }，
+      // 漏掉它们会让设置页改的推送方式/时点被静默重置为默认值。
+      digestMode: r.digestMode !== undefined ? r.digestMode : nestedMail.digestMode,
+      digestTimes: r.digestTimes !== undefined ? r.digestTimes : nestedMail.digestTimes,
     }),
   };
 }
@@ -774,6 +830,8 @@ function saveConfig() {
       lines.push('mailboxes=' + ((l.mail?.mailboxes || []).join(',')));
       lines.push('digestEnabled=' + (l.mail?.digestEnabled ? 'true' : 'false'));
       lines.push('digestIntervalMin=' + (l.mail?.digestIntervalMin ?? DEFAULT_DIGEST_MIN));
+      lines.push('digestMode=' + (l.mail?.digestMode === 'interval' ? 'interval' : DEFAULT_DIGEST_MODE));
+      lines.push('digestTimes=' + (l.mail?.digestTimes || DEFAULT_DIGEST_TIMES));
       for (const s of (l.symbols || [])) {
         lines.push(s.symbol + (s.name && s.name !== s.symbol ? ' ' + s.name : ''));
       }
@@ -880,13 +938,17 @@ function inWindows(hm, windows) {
   return false;
 }
 
+// 时间入参校验：刻意不用 instanceof Date —— 单测沙箱（vm）与主进程是两个 realm，
+// 跨 realm 的 Date 不满足 instanceof，会被静默判成"非法时间"，排查起来非常费劲。
+const isDateLike = (d) => !!d && typeof d.getTime === 'function' && !isNaN(d.getTime());
+
 /**
  * 纯函数：某时刻是否处于指定市场开盘时段。
  * @param d Date
  * @param market 'a'(A股,默认) / 'hk'(港股) / 'both'(A股+港股)
  */
 function isInTradingHours(d, market) {
-  if (!(d instanceof Date) || isNaN(d.getTime())) return false;
+  if (!isDateLike(d)) return false;
   const bj = new Date(d.getTime() + 8 * 3600 * 1000);   // 换算成北京时间（与港股同为 UTC+8）
   const wd = bj.getUTCDay();
   if (wd === 0 || wd === 6) return false;               // 周末不开市
@@ -896,6 +958,110 @@ function isInTradingHours(d, market) {
   if (m === 'hk') return inWindows(hm, HK_SHARE_HOURS);
   if (m === 'both') return inWindows(hm, A_SHARE_HOURS) || inWindows(hm, HK_SHARE_HOURS);
   return inWindows(hm, A_SHARE_HOURS);
+}
+
+// ---------- 定时汇总 · 固定时点判定（纯函数，便于单测）----------
+
+// 北京时间拆解：周末 / HHMM / 日期串一次算好，避免各处重复换算
+function beijingParts(d) {
+  const bj = new Date(d.getTime() + 8 * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return {
+    wd: bj.getUTCDay(),
+    hm: bj.getUTCHours() * 100 + bj.getUTCMinutes(),
+    dateKey: `${bj.getUTCFullYear()}-${p(bj.getUTCMonth() + 1)}-${p(bj.getUTCDate())}`,
+  };
+}
+
+// 是否落在允许推送的窗口内（周末不算）
+function inDigestWindow(d) {
+  if (!isDateLike(d)) return false;
+  const { wd, hm } = beijingParts(d);
+  if (wd === 0 || wd === 6) return false;
+  for (const [lo, hi] of DIGEST_WINDOWS) if (hm >= lo && hm <= hi) return true;
+  return false;
+}
+
+// 两个时刻是否落在同一个交易时段（上午 / 下午）—— 补推只允许在同时段内进行
+function sameDigestSession(a, b) {
+  for (const [lo, hi] of DIGEST_WINDOWS) if (a >= lo && a <= hi && b >= lo && b <= hi) return true;
+  return false;
+}
+
+// 解析时点串："09:30,9:35 09:55" 都能认；自动去重、排序；一个有效项都没有时回退默认
+function parseDigestTimes(v) {
+  const src = v == null ? '' : String(v);
+  const seen = new Set();
+  const out = [];
+  for (const raw of src.split(/[,，;；\s]+/)) {
+    const m = raw.trim().match(/^(\d{1,2}):(\d{1,2})$/);
+    if (!m) continue;
+    const h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+    if (!isFinite(h) || !isFinite(mi) || h > 23 || mi > 59) continue;
+    const hm = h * 100 + mi;
+    if (seen.has(hm)) continue;
+    seen.add(hm);
+    out.push({ hm, label: `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}` });
+  }
+  if (!out.length) {
+    // 回退默认。不递归调用自己，避免异常输入下转不出来
+    for (const s of DEFAULT_DIGEST_TIMES.split(',')) {
+      const [h, mi] = s.split(':').map(Number);
+      const hm = h * 100 + mi;
+      if (seen.has(hm)) continue;
+      seen.add(hm);
+      out.push({ hm, label: s });
+    }
+  }
+  out.sort((a, b) => a.hm - b.hm);
+  return out;
+}
+
+// 把用户输入规范化成 "09:30,09:35,…" 存回配置
+function normalizeDigestTimes(v) {
+  return parseDigestTimes(v).map(x => x.label).join(',');
+}
+
+/**
+ * 固定时点模式的核心判定：此刻该不该推？该推就返回本次要记账的 key（"YYYY-MM-DD HH:MM"）。
+ * 规则：
+ *   · 必须在允许窗口内（开盘前后 5 分钟以内，且避开 11:35–13:00 午休），否则不推；
+ *   · 取「最近一个已过时点」；
+ *   · 补推只限同一交易时段内 —— 10:00 开机补 09:55 可以；14:00 开机不补上午的 09:55；
+ *     更不会在晚上开机时补推，避免打扰休息；
+ *   · 该时点今天已经推过（lastKey 相同）就不重复推。
+ */
+function pickDigestSlot(times, d, lastKey) {
+  if (!isDateLike(d)) return null;
+  if (!inDigestWindow(d)) return null;
+  const { hm, dateKey } = beijingParts(d);
+  const slots = parseDigestTimes(times);
+  let cand = null;
+  for (const s of slots) { if (s.hm <= hm) cand = s; else break; }
+  if (!cand) return null;
+  if (!sameDigestSession(cand.hm, hm)) return null;
+  const key = `${dateKey} ${cand.label}`;
+  if (lastKey === key) return null;
+  return key;
+}
+
+/**
+ * 纯函数：此刻该不该发「收盘总结」？该发就返回本次要记账的信息。
+ * 规则与 pickDigestSlot 一致（窗口内 / 同一交易时段内补推 / 当天不重复），
+ * 区别只有两点：时点固定为 CLOSE_SLOTS，且**与 digestMode 无关**。
+ * @returns {null | {key:string, kind:'morning'|'day', title:string, label:string}}
+ */
+function pickCloseSlot(d, lastKey) {
+  if (!isDateLike(d)) return null;
+  if (!inDigestWindow(d)) return null;
+  const { hm, dateKey } = beijingParts(d);
+  let cand = null;
+  for (const s of CLOSE_SLOTS) { if (s.hm <= hm) cand = s; else break; }
+  if (!cand) return null;
+  if (!sameDigestSession(cand.hm, hm)) return null;
+  const key = `${dateKey} ${cand.label}`;
+  if (lastKey === key) return null;
+  return { key, kind: cand.kind, title: cand.title, label: cand.label };
 }
 
 /**
@@ -1098,13 +1264,49 @@ function pctColor(pct) { return pct > 0 ? MAIL_C_UP : (pct < 0 ? MAIL_C_DOWN : M
 function pctBg(pct) { return pct > 0 ? MAIL_BG_UP : (pct < 0 ? MAIL_BG_DOWN : MAIL_BG_FLAT); }
 
 /**
+ * 邮件公共外壳：深色标题栏 + 白色圆角卡片 + 统一页脚。
+ * 汇总邮件与单只异动提醒都套这一层 —— 两封邮件"长得一样"这件事由结构保证，
+ * 而不是靠两边各写一遍样式再人工比对。样式全部内联：邮件客户端大多不认 <style>。
+ *   title/subtitle  标题与副标题（都会转义）
+ *   inner           卡片主体 HTML（调用方自己拼，已转义）
+ *   footerNote      可选：页脚第二行
+ */
+function mailShell({ title, subtitle, inner, footerNote }) {
+  return [
+    '<!DOCTYPE html><html><head>',
+    '<meta charset="UTF-8">',
+    // 手机端：按设备宽度渲染，避免整页被缩放成"能左右滑的小字"
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '</head>',
+    '<body style="margin:0;padding:0;background:#f5f6f8;">',
+    '<div style="max-width:600px;margin:0 auto;padding:14px 12px 24px;'
+    + 'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',\'PingFang SC\',\'Microsoft YaHei\',sans-serif;'
+    + 'color:#1f2430;-webkit-text-size-adjust:100%;">',
+    '<div style="background:#ffffff;border-radius:12px;overflow:hidden;'
+    + 'box-shadow:0 1px 3px rgba(16,24,40,.06);">',
+    '<div style="padding:14px 16px 12px;background:#1f2430;">',
+    '<div style="font-size:16px;font-weight:700;color:#ffffff;line-height:1.3;">' + escHtml(title) + '</div>',
+    '<div style="margin-top:3px;font-size:12px;color:#aeb8c6;">' + escHtml(subtitle) + '</div>',
+    '</div>',
+    inner,
+    '<div style="padding:11px 14px 14px;font-size:11px;color:#9aa4b2;line-height:1.7;">',
+    '由 <b style="color:#64748b;">Marketmonitor</b> 桌面行情小组件发送<br>',
+    escHtml(footerNote || '推送方式与收件人可在「设置 → 邮件推送」调整'),
+    '</div>',
+    '</div>',
+    '</div>',
+    '</body></html>',
+  ].join('');
+}
+
+/**
  * 汇总邮件 HTML 版。入参：
  *   title/subtitle  标题与时间副标题
  *   rows            [{ name, code, price, pct }]
  *   counts          { up, down, flat }
- *   subtitleExtra   可选：附加说明（如"列表：自选股"）
+ *   close           可选：收盘小结 { title, avg, up, down, flat, leaders, laggers }
  */
-function buildDigestHtml({ title, subtitle, rows, counts }) {
+function buildDigestHtml({ title, subtitle, rows, counts, close }) {
   const tdL = 'padding:9px 12px;border-bottom:1px solid #eef0f3;vertical-align:middle;';
   const tdR = tdL + 'text-align:right;white-space:nowrap;';
   const body = rows.map((r) => {
@@ -1136,34 +1338,34 @@ function buildDigestHtml({ title, subtitle, rows, counts }) {
     + '<tr>' + seg(counts.up, MAIL_C_UP, '涨') + seg(counts.flat, MAIL_C_FLAT, '平') + seg(counts.down, MAIL_C_DOWN, '跌') + '</tr>'
     + '</table>';
 
-  return [
-    '<!DOCTYPE html><html><head>',
-    '<meta charset="UTF-8">',
-    // 手机端：按设备宽度渲染，避免整页被缩放成"能左右滑的小字"
-    '<meta name="viewport" content="width=device-width,initial-scale=1">',
-    '</head>',
-    '<body style="margin:0;padding:0;background:#f5f6f8;">',
-    '<div style="max-width:600px;margin:0 auto;padding:14px 12px 24px;'
-    + 'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',\'PingFang SC\',\'Microsoft YaHei\',sans-serif;'
-    + 'color:#1f2430;-webkit-text-size-adjust:100%;">',
-    '<div style="background:#ffffff;border-radius:12px;overflow:hidden;'
-    + 'box-shadow:0 1px 3px rgba(16,24,40,.06);">',
-    '<div style="padding:14px 16px 12px;background:#1f2430;">',
-    '<div style="font-size:16px;font-weight:700;color:#ffffff;line-height:1.3;">' + escHtml(title) + '</div>',
-    '<div style="margin-top:3px;font-size:12px;color:#aeb8c6;">' + escHtml(subtitle) + '</div>',
-    '</div>',
-    '<div style="padding:12px 12px 0;">' + overview + '</div>',
-    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:10px 0 0;">',
-    body,
-    '</table>',
-    '<div style="padding:11px 14px 14px;font-size:11px;color:#9aa4b2;line-height:1.7;">',
-    '由 <b style="color:#64748b;">Marketmonitor</b> 桌面行情小组件定时汇总发送<br>',
-    '间隔与收件人可在「设置 → 邮件推送」调整',
-    '</div>',
-    '</div>',
-    '</div>',
-    '</body></html>',
-  ].join('');
+  // 收盘小结卡片：只有收盘那两封才有（close.avg 已是带符号的字符串）
+  const closeBlock = (close && close.leaders) ? (
+    '<div style="margin:12px 12px 0;padding:11px 13px;background:#f7f9fc;'
+    + 'border:1px solid #e8ecf2;border-radius:10px;">'
+    + '<div style="font-size:13px;font-weight:700;color:#1f2430;margin-bottom:7px;">'
+    + escHtml(close.title) + '小结</div>'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+    + 'style="border-collapse:collapse;font-size:12px;color:#475569;">'
+    + '<tr><td style="padding:3px 0;color:#94a3b8;width:84px;">平均涨跌幅</td>'
+    + '<td style="padding:3px 0;font-weight:700;font-family:Consolas,Menlo,monospace;color:'
+    + pctColor(parseFloat(close.avg)) + ';">' + escHtml(close.avg) + '</td></tr>'
+    + '<tr><td style="padding:3px 0;color:#94a3b8;">涨 / 跌 / 平</td>'
+    + '<td style="padding:3px 0;font-family:Consolas,Menlo,monospace;">'
+    + close.up + ' / ' + close.down + ' / ' + close.flat + '</td></tr>'
+    + '<tr><td style="padding:3px 0;color:#94a3b8;vertical-align:top;">领涨</td>'
+    + '<td style="padding:3px 0;line-height:1.6;">' + escHtml(close.leaders.join('　')) + '</td></tr>'
+    + '<tr><td style="padding:3px 0;color:#94a3b8;vertical-align:top;">领跌</td>'
+    + '<td style="padding:3px 0;line-height:1.6;">' + escHtml(close.laggers.join('　')) + '</td></tr>'
+    + '</table></div>') : '';
+
+  // 汇总与异动两封邮件共用同一个外壳，样式天然一致（用户 2026-09-18 要求预警邮件也做成卡片式彩色）
+  const table = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+    + 'style="border-collapse:collapse;margin:10px 0 0;">' + body + '</table>';
+  return mailShell({
+    title,
+    subtitle,
+    inner: '<div style="padding:12px 12px 0;">' + overview + '</div>' + closeBlock + table,
+  });
 }
 
 /**
@@ -1302,6 +1504,56 @@ function smtpSend(opts) {
   });
 }
 
+// 单只异动提醒的 HTML 版：与汇总邮件共用外壳与涨红跌绿配色。
+// 版式上突出"就这一只"——大号涨跌幅 + 详情表，手机上不用横向找。
+function buildAlertHtml(a) {
+  const pct = Number(a.changePct) || 0;
+  const price = Number(a.price) || 0;
+  const sign = a.up ? '+' : '';
+  const c = pctColor(pct);
+  const bg = pctBg(pct);
+  const bj = new Date(Date.now() + 8 * 3600 * 1000);
+  const tstr = bj.toISOString().replace('T', ' ').slice(0, 19);
+  const dir = a.up ? '上涨' : '下跌';
+  const thr = a.threshold != null ? a.threshold + '%' : '（测试邮件）';
+  const cell = 'padding:8px 12px;border-bottom:1px solid #eef0f3;';
+  const row = (k, v) => '<tr>'
+    + '<td style="' + cell + 'color:#9aa4b2;font-size:12px;width:92px;">' + escHtml(k) + '</td>'
+    + '<td style="' + cell + 'font-size:13px;color:#1f2430;font-family:Consolas,Menlo,monospace;">' + v + '</td>'
+    + '</tr>';
+  const inner = ''
+    + '<div style="padding:14px 12px 0;">'
+    + '<div style="background:' + bg + ';border-radius:10px;padding:16px 14px 15px;text-align:center;">'
+    + '<div style="font-size:12px;color:#64748b;line-height:1.5;">'
+    + escHtml(a.name) + '　' + escHtml(a.symbol) + '</div>'
+    + '<div style="margin-top:6px;font-size:34px;font-weight:700;line-height:1.15;'
+    + 'font-family:Consolas,Menlo,monospace;color:' + c + ';">' + sign + pct.toFixed(2) + '%</div>'
+    + '<div style="margin-top:7px;font-size:14px;color:#475569;font-family:Consolas,Menlo,monospace;">现价 '
+    + price.toFixed(2) + '</div>'
+    + '<div style="margin-top:9px;display:inline-block;padding:3px 11px;border-radius:999px;background:#ffffff;'
+    + 'font-size:12px;font-weight:700;color:' + c + ';">' + escHtml(dir) + ' · 触发阈值 ' + escHtml(thr) + '</div>'
+    + '</div>'
+    + '</div>'
+    + '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:12px 0 0;">'
+    + row('名称', escHtml(a.name))
+    + row('代码', escHtml(a.symbol))
+    + row('现价', price.toFixed(2))
+    + row('涨跌幅', '<b style="color:' + c + ';">' + sign + pct.toFixed(2) + '%</b>')
+    + row('触发阈值', escHtml(thr))
+    + row('时间', escHtml(tstr) + '　北京时间')
+    + '</table>'
+    + (a.threshold == null
+      ? '<div style="padding:10px 12px 0;font-size:12px;color:#94a3b8;line-height:1.7;">'
+        + '这是一封测试邮件，收到即表示配置正确。</div>'
+      : '');
+  return mailShell({
+    title: a.name + ' ' + dir + ' ' + sign + pct.toFixed(2) + '%',
+    subtitle: '异动提醒　北京时间 ' + tstr,
+    inner,
+    footerNote: '异动阈值与收件人可在「设置 → 邮件推送」调整',
+  });
+}
+
 // 组装邮件内容
 function buildAlertMail(a) {
   const sign = a.up ? '+' : '';
@@ -1320,7 +1572,7 @@ function buildAlertMail(a) {
     '',
     '—— 由 Marketmonitor 桌面行情小组件自动发送（阈值可在「设置 → 邮件推送」调整）',
   ].join('\n');
-  return { subject, text };
+  return { subject, text, html: buildAlertHtml(a) };
 }
 
 function writeMailLog(line) {
@@ -1338,7 +1590,7 @@ function queueAlertMail(a, list) {
     .then(() => smtpSend({
       host: e.host, port: e.port, secure: e.secure,
       user: e.user, pass: e.pass, from: e.user, to,
-      subject: mail.subject, text: mail.text,
+      subject: mail.subject, text: mail.text, html: mail.html,
     }))
     .then(() => {
       console.log('[mail] 已发送:', mail.subject, '->', to.join(','));
@@ -1386,6 +1638,7 @@ async function sendTestMail() {
       user: e.user, pass: e.pass, from: e.user, to,
       subject: '[测试] ' + mail.subject,
       text: '这是一封来自 Marketmonitor 的测试邮件，收到即表示配置正确。\n\n' + mail.text,
+      html: mail.html,
     });
     writeMailLog(`[${new Date().toISOString()}] OK   (测试) -> ${to.join(',')}`);
     return { ok: true, to: to.join(','), count: to.length };
@@ -1416,7 +1669,9 @@ function padEndW(s, n) {
 }
 
 // 汇总邮件正文：纯文本等宽表格（老客户端兜底）+ HTML 卡片（手机友好、涨红跌绿）
-function buildDigestMail(quotes, list) {
+function buildDigestMail(quotes, list, opts) {
+  const o = opts || {};
+  const closeTitle = o.close ? String(o.closeTitle || '收盘') : '';
   const arr = (quotes || []).filter(q => q && q.symbol);
   if (!arr.length) return null;
   const bj = new Date(Date.now() + 8 * 3600 * 1000);
@@ -1434,6 +1689,16 @@ function buildDigestMail(quotes, list) {
   const down = rows.filter(r => r.pct < 0).length;
   const flat = rows.length - up - down;
 
+  // 收盘小结（只有 11:30 / 15:00 那两封带）：平均涨跌幅 + 领涨/领跌前三。
+  // 用同一批行情快照算，不依赖历史数据 —— 11:30 那封反映"截至上午收盘"，
+  // 15:00 那封反映"全天收盘"。
+  const avg = rows.reduce((s, r) => s + r.pct, 0) / rows.length;
+  const signed = (n) => (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+  const byPct = rows.slice().sort((a, b) => b.pct - a.pct);
+  const brief = (r) => `${r.name} ${signed(r.pct)}`;
+  const leaders = byPct.slice(0, 3).map(brief);
+  const laggers = byPct.slice(-3).reverse().map(brief);
+
   // ---- 纯文本版：中文按 2 列宽对齐 ----
   const wName = Math.max(8, ...rows.map(r => dispWidth(r.name))) + 2;
   const wCode = Math.max(8, ...rows.map(r => r.code.length)) + 2;
@@ -1443,25 +1708,41 @@ function buildDigestMail(quotes, list) {
       + padEndW(r.price.toFixed(2), 10) + sign + r.pct.toFixed(2) + '%';
   });
   const lname = String((list && list.name) || '').trim();
-  const subject = `[Marketmonitor] ${lname ? lname + ' ' : ''}行情汇总 ${tstr.slice(11, 16)}（${rows.length} 只）`;
+  const head = closeTitle ? `${closeTitle}小结` : '行情汇总';
+  const subject = closeTitle
+    ? `[Marketmonitor] ${lname ? lname + ' ' : ''}${closeTitle}小结（${rows.length} 只）`
+    : `[Marketmonitor] ${lname ? lname + ' ' : ''}行情汇总 ${tstr.slice(11, 16)}（${rows.length} 只）`;
+  // 收盘小结段落：纯文本与 HTML 共用同一份数据，避免两处口径漂移
+  const briefLines = closeTitle ? [
+    '',
+    `【${closeTitle}小结】`,
+    `  平均涨跌幅  ${signed(avg)}`,
+    `  涨 / 跌 / 平  ${up} / ${down} / ${flat}`,
+    `  领涨  ${leaders.join('   ')}`,
+    `  领跌  ${laggers.join('   ')}`,
+  ] : [];
   const text = [
-    `${lname ? lname + ' ' : ''}行情汇总（北京时间 ${tstr}）`,
+    `${lname ? lname + ' ' : ''}${head}（北京时间 ${tstr}）`,
     '',
     '  ' + padEndW('名称', wName) + padEndW('代码', wCode) + padEndW('现价', 10) + '涨跌幅',
     '  ' + '-'.repeat(wName + wCode + 16),
     ...body,
     '',
     `共 ${rows.length} 只：上涨 ${up} / 下跌 ${down} / 平盘 ${flat}`,
+    ...briefLines,
     '',
-    '—— 由 Marketmonitor 桌面行情小组件定时汇总发送（间隔可在「设置 → 邮件推送」调整）',
+    closeTitle
+      ? '—— 由 Marketmonitor 桌面行情小组件在收盘时刻发送（方式与间隔可在「设置 → 邮件推送」调整）'
+      : '—— 由 Marketmonitor 桌面行情小组件定时汇总发送（间隔可在「设置 → 邮件推送」调整）',
   ].join('\n');
 
   // ---- HTML 版：手机友好卡片 ----
   const html = buildDigestHtml({
-    title: (lname ? lname + ' · ' : '') + '行情汇总',
+    title: (lname ? lname + ' · ' : '') + head,
     subtitle: `北京时间 ${tstr}　共 ${rows.length} 只`,
     rows,
     counts: { up, down, flat },
+    close: closeTitle ? { title: closeTitle, avg: signed(avg), up, down, flat, leaders, laggers } : null,
   });
 
   return { subject, text, html };
@@ -1469,6 +1750,43 @@ function buildDigestMail(quotes, list) {
 
 // 每个列表各有一份汇总计时：Map listId -> 上次发送时刻
 const digestTs = new Map();
+
+// 已推记录：记录「每个列表最后一次推送的时点」，形如 { slot: { l1: '2026-09-18 09:55' },
+// close: { l1: '2026-09-18 11:30' } }。
+// 为什么要落盘：程序在某个时点刚推完就重启（内存清空）时，不该因此又补推一封。
+// 为什么分两个命名空间：收盘总结与固定时点是两套独立的时点表，若共用一个 key 槽位，
+// 11:30 的收盘记录会覆盖 09:55 的固定记录，随后 11:35 的 tick 会以为 09:55 还没推而重发一封。
+let digestFired = { slot: {}, close: {} };
+let digestFiredLoaded = false;
+function digestStatePath() { return path.join(app.getPath('userData'), 'digest-state.json'); }
+function ensureDigestFiredLoaded() {
+  if (digestFiredLoaded) return;
+  digestFiredLoaded = true;
+  try {
+    const p = digestStatePath();
+    if (fs.existsSync(p)) {
+      const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (j && typeof j === 'object' && !Array.isArray(j)) {
+        if (j.slot || j.close) {
+          digestFired.slot = (j.slot && typeof j.slot === 'object') ? j.slot : {};
+          digestFired.close = (j.close && typeof j.close === 'object') ? j.close : {};
+        } else {
+          // 兼容 v1.5.3 首版的旧格式（顶层直接是 { listId: 'YYYY-MM-DD HH:MM' }）→ 视为固定时点记录
+          digestFired.slot = j;
+          digestFired.close = {};
+        }
+      }
+    }
+  } catch (_) { digestFired = { slot: {}, close: {} }; }
+}
+function saveDigestFired() {
+  try {
+    const p = digestStatePath();
+    const tmp = p + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(digestFired), 'utf8');
+    fs.renameSync(tmp, p);   // 与 config 一致：先写临时文件再整体替换
+  } catch (_) {}
+}
 
 // 重置汇总计时基准（开启/改间隔时调用；不传 id 则全部重置）
 function resetDigestTimer(listId) {
@@ -1482,6 +1800,29 @@ function checkDigest(quotes, list) {
   const m = list.mail || DEFAULT_LIST_MAIL;
   if (!m.digestEnabled) return false;
   const now = Date.now();
+
+  // —— 收盘总结：11:30 / 15:00，**与推送方式无关，两种模式都先判一次** ——
+  // 先判它再判固定时点/间隔，保证收盘那一刻发出的必定是「带收盘小结」的那一封。
+  ensureDigestFiredLoaded();
+  const ck = pickCloseSlot(new Date(now), digestFired.close[list.id]);
+  if (ck) {
+    digestFired.close[list.id] = ck.key;
+    saveDigestFired();
+    queueDigestMail(quotes, list, { close: ck.kind, closeTitle: ck.title, closeLabel: ck.label });
+    return true;
+  }
+
+  // —— 固定时点模式：只在开盘窗口内按指定时点推；错过则在同一交易时段内补推最近一次 ——
+  if ((m.digestMode || DEFAULT_DIGEST_MODE) === 'fixed') {
+    const key = pickDigestSlot(m.digestTimes, new Date(now), digestFired.slot[list.id]);
+    if (!key) return false;
+    digestFired.slot[list.id] = key;
+    saveDigestFired();
+    queueDigestMail(quotes, list);
+    return true;
+  }
+
+  // —— 间隔模式（原有行为，保持不动）——
   const last = digestTs.get(list.id);
   if (!last) { digestTs.set(list.id, now); return false; }   // 首次只对齐时间基准，不立刻发
   const iv = clampDigestMin(m.digestIntervalMin) * 60000;
@@ -1491,10 +1832,10 @@ function checkDigest(quotes, list) {
   return true;
 }
 
-function queueDigestMail(quotes, list) {
+function queueDigestMail(quotes, list, opts) {
   const e = store.email || DEFAULT_EMAIL;
   const to = mailToList(list);
-  const mail = buildDigestMail(quotes, list);
+  const mail = buildDigestMail(quotes, list, opts);
   if (!to.length || !mail) return;
   const tag = (list && list.name) || '-';
   mailQueue = mailQueue
@@ -2188,6 +2529,9 @@ function listForUi(l) {
       mailboxes: [...(m.mailboxes || [])],
       digestEnabled: !!m.digestEnabled,
       digestIntervalMin: m.digestIntervalMin || DEFAULT_DIGEST_MIN,
+      // 设置页要靠这两个字段回显「推送方式 / 时点」，漏了会一直显示默认值（config 却已改）
+      digestMode: m.digestMode === 'interval' ? 'interval' : DEFAULT_DIGEST_MODE,
+      digestTimes: m.digestTimes || DEFAULT_DIGEST_TIMES,
     },
     // 该列表实际会收到的收件地址（设置页用来回显"将发给谁"）
     toAddrs: mailToList(l).join(', '),
@@ -2268,6 +2612,7 @@ ipcMain.handle('save-list', (_e, listId, patch) => {
   const digestChanged = mailChanged && (
     next.mail.digestEnabled !== (l.mail && l.mail.digestEnabled)
     || next.mail.digestIntervalMin !== (l.mail && l.mail.digestIntervalMin)
+    || next.mail.digestMode !== (l.mail && l.mail.digestMode)
   );
   Object.assign(l, next);
   if (digestChanged) resetDigestTimer(listId);   // 只改汇总开关/间隔时才重排基准
@@ -2544,6 +2889,36 @@ ipcMain.handle('fetch-stock-name', async (_e, symbol) => {
   } catch (_) { return symbol; }
 });
 
+// 手动添加指数：用真实行情校验这个代码到底取不取得到数，能取到就顺带把真实名称带回来。
+// 为什么必须校验：腾讯行情对"段内但不存在的号"返回空串，用户敲错一位就会往列表里
+// 加进一个永远显示不出行情的标的 —— 这种错在界面上很难自查。
+ipcMain.handle('probe-index', async (_e, raw) => {
+  const sym = normalizeIndexCode(raw);
+  if (!sym) {
+    return { ok: false, error: '代码格式不对：指数代码形如 000300 / sh000300 / sz399997 / hkHSI' };
+  }
+  try {
+    const res = await fetch(`https://qt.gtimg.cn/q=${sym}`, {
+      headers: { 'Referer': 'https://gu.qq.com/', 'User-Agent': 'Mozilla/5.0' },
+    });
+    const buf = Buffer.from(await res.arrayBuffer());
+    const text = iconv.decode(buf, 'gbk');
+    const m = text.match(/v_[a-zA-Z0-9]+="([^"]*)"/);
+    const f = m ? m[1].split('~') : [];
+    const name = (f[1] || '').trim();
+    const price = parseFloat(f[3]);
+    if (!name || !isFinite(price) || price <= 0) {
+      return {
+        ok: false,
+        error: `${sym} 取不到行情，请核对代码（腾讯行情不支持中证新代码段 930xxx / 931xxx / 932xxx）`,
+      };
+    }
+    return { ok: true, symbol: sym, name, price };
+  } catch (e) {
+    return { ok: false, error: '校验失败：' + e.message };
+  }
+});
+
 // 位置：按九宫格锚点归位（设置页"位置"卡片用，按列表各自的尺寸计算）
 ipcMain.handle('set-widget-position', (_e, listId, anchor) => {
   const l = getList(listId);
@@ -2732,6 +3107,19 @@ const REPO_URL = 'https://github.com/yohoky/marketmonitor';
 // 版本改动记录（只记 1.4.x，1.4.0 之前不收录）——设置页「关于」卡片直接渲染本数组。
 // 以后发新版只需在最前面加一条，渲染逻辑不用动。
 const CHANGELOG = [
+  {
+    v: '1.5.3', date: '2026-09-18',
+    items: [
+      '定时汇总新增「按固定时点」推送：默认每天 09:30 / 09:35 / 09:55 / 14:35 / 14:48 / 14:54 各推一封，时点可在设置页自行增删（逗号分隔）',
+      '只在大盘开盘窗口内推送：上午 09:25–11:35、下午 13:00–15:05（开盘前后各 5 分钟以内）；11:35–13:00 午休期间一封都不发，收盘后与夜间同样不打扰',
+      '某个时点没赶上（电脑休眠 / 程序没开）会在同一个交易时段内补推最近一次：10:00 开机补 09:55、14:40 开机补 14:35；跨交易时段不补，晚上开机不会补推早上的汇总',
+      '已推送的时点记录在本地，程序重启不会重复推同一个时点',
+      '原来的「每隔 N 分钟」方式完整保留，设置页可在「按固定时点 / 按间隔」之间随时切换',
+      '新增收盘总结邮件：不论定时汇总用的是「按固定时点」还是「按间隔」，上午收盘 11:30 与下午收盘 15:00 都会各发一封，并附带涨 / 跌 / 平家数、平均涨跌幅与领涨前三 / 领跌前三的收盘小结',
+      '单只异动提醒邮件也改成卡片式彩色排版：大号涨跌幅 + 名称 / 代码 / 现价 / 触发阈值 / 时间详情表，与汇总邮件共用同一套版式（涨红跌绿），手机上不用横向滑动',
+      '指数库新增「手动添加指数」：输入代码即用真实行情校验，取得到数据才加入当前列表（沪深两处挂牌会自动归一）；清单本身只收常用指数，避免菜单过于庞大',
+    ],
+  },
   {
     v: '1.5.2', date: '2026-09-17',
     items: [

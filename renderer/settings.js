@@ -648,6 +648,9 @@ async function renderPosition() {
 const idxGrid = document.getElementById('idx-grid');
 const indexCount = document.getElementById('index-count');
 const idxSearch = document.getElementById('idx-search');
+const idxManualInput = document.getElementById('idx-manual-input');
+const idxManualBtn = document.getElementById('idx-manual-btn');
+const idxManualMsg = document.getElementById('idx-manual-msg');
 
 // 预设按「宽基 / 行业板块 / 主题概念」三组展示；手写在 config.ini 里的清单外代码归到"其它"，
 // 保证用户自己加的指数在页面上也看得见、能取消勾选。
@@ -670,7 +673,9 @@ let idxQuery = '';
 // 表现为"指数区里混着一堆个股"，用户一眼就看出不对。
 function looksLikeIndex(sym) {
   const s = String(sym || '').toLowerCase();
-  return /^sh000\d{3}$/.test(s) || /^sz399\d{3}$/.test(s) || /^sz980\d{3}$/.test(s) || /^hk[a-z]+$/.test(s);
+  // sh93xxxx（中证新代码段）目前腾讯行情取不到数，但格式合法 —— 留着，
+  // 这样主进程手动添加若要放行同类代码，指数库里也看得见、能取消勾选。
+  return /^sh(000\d{3}|93\d{4})$/.test(s) || /^sz(399\d{3}|980\d{3})$/.test(s) || /^hk[a-z]+$/.test(s);
 }
 
 function renderIdxGrid() {
@@ -752,6 +757,42 @@ if (idxSearch) {
   idxSearch.addEventListener('input', (e) => {
     idxQuery = e.target.value || '';
     renderIdxGrid();
+  });
+}
+
+// 手动添加指数：清单只收常用项，想要的没在里面就自己按代码加。
+// 必须走主进程真实行情校验 —— 腾讯行情对"段内但不存在的号"返回空串，
+// 敲错一位就会往列表里加进一个永远空着的标的，界面上一眼看不出来。
+async function addIndexManual() {
+  const raw = String((idxManualInput && idxManualInput.value) || '').trim();
+  if (!raw) { if (idxManualInput) idxManualInput.focus(); return; }
+  const say = (msg, ok) => {
+    if (!idxManualMsg) return;
+    idxManualMsg.textContent = msg;
+    idxManualMsg.style.color = ok ? '#16a34a' : '#ef4444';
+  };
+  say('校验中…', true);
+  let r = null;
+  try { r = await window.stockApi.probeIndex(raw); } catch (e) { r = { ok: false, error: e.message }; }
+  if (!r || !r.ok) { say((r && r.error) || '校验失败', false); return; }
+
+  const l = activeList();
+  if (!l) { say('没有选中的列表', false); return; }
+  const symbols = (l.symbols || []).slice();
+  const key = String(r.symbol).toLowerCase();
+  if (symbols.some(s => String(s.symbol).toLowerCase() === key)) {
+    say(`当前列表已有：${r.name}（${r.symbol}）`, false);
+    return;
+  }
+  symbols.push({ symbol: r.symbol, name: r.name });
+  await commitSymbols(symbols);
+  if (idxManualInput) idxManualInput.value = '';
+  say(`已加入当前列表：${r.name}（${r.symbol}）`, true);
+}
+if (idxManualBtn) idxManualBtn.addEventListener('click', addIndexManual);
+if (idxManualInput) {
+  idxManualInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addIndexManual(); }
   });
 }
 
@@ -849,7 +890,13 @@ const pickEl = document.getElementById('mail-pick');
 const mailToReadout = document.getElementById('mail-to-readout');
 const emailDigest = document.getElementById('email-digest');
 const emailDigestMin = document.getElementById('email-digest-min');
+const emailDigestMode = document.getElementById('email-digest-mode');
+const emailDigestTimes = document.getElementById('email-digest-times');
+const digestTimesRow = document.getElementById('digest-times-row');
+const digestIntervalLabel = document.getElementById('digest-interval-label');
 const digestHint = document.getElementById('digest-hint');
+// 默认时点：仅用于界面回显（真正兜底在主进程的 DEFAULT_DIGEST_TIMES）
+const DEFAULT_DIGEST_TIMES_UI = '09:30,09:35,09:55,14:35,14:48,14:54';
 const emailDigestNowBtn = document.getElementById('email-digest-now');
 const emailDigestResult = document.getElementById('email-digest-result');
 
@@ -995,12 +1042,22 @@ function renderDigest() {
   if (!l || !emailDigest) return;
   const m = l.mail || {};
   emailDigest.checked = !!m.digestEnabled;
-  if (emailDigestMin) emailDigestMin.value = m.digestIntervalMin || 30;
-  emailDigestMin.disabled = !m.digestEnabled;
+  const mode = m.digestMode === 'interval' ? 'interval' : 'fixed';
+  const off = !m.digestEnabled;
+  if (emailDigestMode) { emailDigestMode.value = mode; emailDigestMode.disabled = off; }
+  if (emailDigestMin) { emailDigestMin.value = m.digestIntervalMin || 30; emailDigestMin.disabled = off; }
+  if (emailDigestTimes) { emailDigestTimes.value = m.digestTimes || DEFAULT_DIGEST_TIMES_UI; emailDigestTimes.disabled = off; }
+  // 两种方式二选一：只显示当前方式对应的输入项
+  if (digestTimesRow) digestTimesRow.style.display = (mode === 'fixed') ? '' : 'none';
+  if (digestIntervalLabel) digestIntervalLabel.style.display = (mode === 'interval') ? '' : 'none';
   if (digestHint) {
-    digestHint.textContent = m.digestEnabled
-      ? `该列表每 ${m.digestIntervalMin || 30} 分钟汇总一封（独立计时）`
-      : '（仅对当前列表生效）';
+    if (!m.digestEnabled) digestHint.textContent = '（仅对当前列表生效）';
+    else if (mode === 'fixed') {
+      const n = String(m.digestTimes || DEFAULT_DIGEST_TIMES_UI).split(/[,，;；\s]+/).filter(Boolean).length;
+      digestHint.textContent = `该列表每天按 ${n} 个固定时点汇总一封（仅开盘时段，独立计时）`;
+    } else {
+      digestHint.textContent = `该列表每 ${m.digestIntervalMin || 30} 分钟汇总一封（独立计时）`;
+    }
   }
   if (emailDigestResult) emailDigestResult.textContent = '';
 }
@@ -1051,12 +1108,19 @@ emailTestBtn?.addEventListener('click', async () => {
 });
 
 emailDigest?.addEventListener('change', () => saveMail({ digestEnabled: emailDigest.checked }));
+emailDigestMode?.addEventListener('change', () => {
+  saveMail({ digestMode: emailDigestMode.value === 'interval' ? 'interval' : 'fixed' });
+});
 emailDigestMin?.addEventListener('change', () => {
   let n = parseInt(emailDigestMin.value, 10);
   if (!isFinite(n) || n < 1) n = 1;
   if (n > 1440) n = 1440;
   emailDigestMin.value = n;
   saveMail({ digestIntervalMin: n });
+});
+// 时点：失焦 / 回车才提交。主进程负责去重、排序、丢弃非法项，并把规范化结果回显到输入框
+emailDigestTimes?.addEventListener('change', () => {
+  saveMail({ digestTimes: emailDigestTimes.value.trim() });
 });
 // 立即给当前列表发一封汇总：不等间隔，验证配置是否真的通
 emailDigestNowBtn?.addEventListener('click', async () => {
