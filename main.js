@@ -464,7 +464,9 @@ const LIST_WIN_DEFAULTS = {
 
 // 定时汇总的两种模式：
 //   fixed    —— 按固定时点推（默认）
-//   interval —— 每隔 digestIntervalMin 分钟推一次（原有行为，逻辑保持不动）
+//   interval —— 每隔 digestIntervalMin 分钟推一次
+//   ⚠️ 两种模式都必须受 DIGEST_WINDOWS 约束（2026-09-18 修复：原 interval 分支漏了窗口闸门，
+//   导致收盘后/午休/夜间仍按间隔持续刷邮件）。详见 checkDigest 顶部的统一闸门。
 const DEFAULT_DIGEST_MODE = 'fixed';
 // 默认时点：开盘 3 次（看早盘）+ 尾盘 3 次（看收盘）。间隔刻意不均匀 —— 用户指定的口径。
 const DEFAULT_DIGEST_TIMES = '09:30,09:35,09:55,14:35,14:48,14:54';
@@ -1859,6 +1861,11 @@ function checkDigest(quotes, list) {
   if (!m.digestEnabled) return false;
   const now = Date.now();
 
+  // 统一窗口闸门：固定/间隔/收盘小结三类汇总都受同一时间窗约束。
+  // 收盘后(>15:05)与午休(11:35–13:00)一律不发，避免收盘后/夜间仍按间隔模式持续刷邮件。
+  // 异动提醒邮件由 evalAlerts 的 isInTradingHours 单独约束，不在此处。
+  if (!inDigestWindow(new Date(now))) return false;
+
   // —— 收盘总结：11:30 / 15:00，**与推送方式无关，两种模式都先判一次** ——
   // 先判它再判固定时点/间隔，保证收盘那一刻发出的必定是「带收盘小结」的那一封。
   ensureDigestFiredLoaded();
@@ -3176,6 +3183,15 @@ const REPO_URL = 'https://github.com/yohoky/marketmonitor';
 // 版本改动记录（只记 1.4.x，1.4.0 之前不收录）——设置页「关于」卡片直接渲染本数组。
 // 以后发新版只需在最前面加一条，渲染逻辑不用动。
 const CHANGELOG = [
+  {
+    v: '1.5.6', date: '2026-09-18',
+    items: [
+      '修复：定时汇总选「每隔 N 分钟」模式时，完全不看发送时间窗 —— 收盘后（15:00 之后）、午休（11:35–13:00）、乃至晚上只要程序还开着就照发，邮箱被持续刷屏（用户 2026-09-18 16:25 反馈「收盘后还在发邮件」）',
+      '根因：间隔模式的分支漏了窗口判定，只有「固定时点」和「收盘总结」走了窗口闸门，间隔模式直接按计时器发',
+      '现在定时汇总的三种方式（固定时点 / 每隔 N 分钟 / 收盘总结）统一受同一个发送时间窗约束：仅上午 09:25–11:35、下午 13:00–15:05 发送，午休与收盘后一律不发',
+      '异动提醒邮件不受影响：它本来就有「仅开盘时段提醒」开关（alertTradingHours，默认开），收盘后不会推送',
+    ],
+  },
   {
     v: '1.5.5', date: '2026-09-18',
     items: [
