@@ -1141,14 +1141,24 @@ emailDigestNowBtn?.addEventListener('click', async () => {
 });
 
 // ---------- 列表的增删改 ----------
+// ⚠️ 这里【绝不能】用 window.prompt()：Electron 渲染进程不支持它，调用会直接抛
+//    "prompt() is and will not be supported."。原来这行写在 try 之外，异常变成
+//    静默的 unhandled rejection —— 表现就是"点「+ 新建列表」毫无反应"（v1.5.4 修复）。
+// 现在的做法：直接建一个默认名的新列表并选中，再把光标送进「列表名称」输入框，
+// 用户当场改名即可（比弹框少一步，也不用依赖任何原生对话框）。
 document.getElementById('new-list-btn')?.addEventListener('click', async () => {
-  const name = prompt('新列表名称（例如：基金 / 港股 / 板块指数）', '列表 ' + (state.lists.length + 1));
-  if (name === null) return;
   try {
-    const r = await window.stockApi.createList(String(name || '').trim());
+    const r = await window.stockApi.createList('');
     if (!r || !r.ok) { alert((r && r.error) || '创建失败'); return; }
     applyListUpdate(r.list);
     selectList(r.list.id);
+    const nameEl = document.getElementById('list-name');
+    if (nameEl) { nameEl.focus(); nameEl.select(); }
+    const hint = document.getElementById('list-hint');
+    if (hint) {
+      hint.innerHTML = `新列表已创建（ID <b>${escapeHtml(r.list.id)}</b>）· 在<b>列表名称</b>里改成你想要的名字`
+        + '（如「基金」「港股」）—— 标的、窗口、异动阈值、收件邮箱、定时汇总都与其它列表<b>各自独立</b>';
+    }
   } catch (e) { alert('创建失败：' + e.message); }
 });
 
