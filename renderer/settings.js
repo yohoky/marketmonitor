@@ -917,9 +917,7 @@ function renderEmailGlobal() {
     emailPassHint.textContent = c.hasPass ? '已保存授权码（留空则不修改）' : '尚未设置授权码';
     emailPassHint.style.color = c.hasPass ? '#16a34a' : '#94a3b8';
   }
-  if (emailFollow) emailFollow.checked = c.followAlerts !== false;
-  if (emailThUp) emailThUp.value = c.thresholdUp ?? 3.9;
-  if (emailThDown) emailThDown.value = c.thresholdDown ?? 3.9;
+  // 邮件阈值已下移到列表级，由 syncEmailThresholdUI() 按当前列表回显
 }
 
 // 收件槽位（1~5）：地址 + 启用
@@ -1017,15 +1015,34 @@ function renderMailToReadout() {
   }
 }
 
-// 跟随异动阈值时，独立阈值输入框置灰并回显当前列表的异动阈值
+// 邮件阈值（按列表各设一套）：
+//   跟随 = 用本列表「异动提醒」的阈值；不跟随 = 本列表单独设一个邮件阈值。
+// 跟随时独立输入框置灰，并回显本列表的异动阈值（不再是全局值）。
 function syncEmailThresholdUI() {
-  const follow = !emailFollow || emailFollow.checked;
   const l = activeList();
-  const a = (l && l.alerts) || {};
-  const up = a.thresholdUp != null ? a.thresholdUp : 3.9;
-  const down = a.thresholdDown != null ? a.thresholdDown : 3.9;
-  if (emailThUp) { emailThUp.disabled = follow; if (follow) emailThUp.value = up; }
-  if (emailThDown) { emailThDown.disabled = follow; if (follow) emailThDown.value = down; }
+  if (!l) return;
+  const m = l.mail || {};
+  const a = l.alerts || {};
+  const follow = m.followAlerts !== false;
+  const aUp = a.thresholdUp != null ? a.thresholdUp : 3.9;
+  const aDown = a.thresholdDown != null ? a.thresholdDown : 3.9;
+  const mUp = m.thresholdUp != null ? m.thresholdUp : 3.9;
+  const mDown = m.thresholdDown != null ? m.thresholdDown : 3.9;
+  if (emailFollow) emailFollow.checked = follow;
+  if (emailThUp) {
+    emailThUp.disabled = follow;
+    emailThUp.value = follow ? aUp : mUp;
+  }
+  if (emailThDown) {
+    emailThDown.disabled = follow;
+    emailThDown.value = follow ? aDown : mDown;
+  }
+  const hint = document.getElementById('email-thr-hint');
+  if (hint) {
+    hint.textContent = follow
+      ? `% 才发邮件（跟随本列表异动阈值：涨 ${aUp}% / 跌 ${aDown}%）`
+      : '% 才发邮件（本列表单独设定）';
+  }
 }
 
 async function saveEmailCfg(patch) {
@@ -1069,6 +1086,7 @@ async function saveMail(patch) {
   await saveActive({ mail: next });
   renderDigest();
   renderMailPick();
+  syncEmailThresholdUI();
 }
 
 emailEnabled?.addEventListener('change', () => saveEmailCfg({ enabled: emailEnabled.checked }));
@@ -1084,11 +1102,10 @@ emailPass?.addEventListener('change', async () => {
   emailPass.value = '';
 });
 emailFollow?.addEventListener('change', () => {
-  syncEmailThresholdUI();
-  saveEmailCfg({ followAlerts: emailFollow.checked });
+  saveMail({ followAlerts: emailFollow.checked });
 });
-emailThUp?.addEventListener('change', () => saveEmailCfg({ thresholdUp: readThreshold(emailThUp, 3.9) }));
-emailThDown?.addEventListener('change', () => saveEmailCfg({ thresholdDown: readThreshold(emailThDown, 3.9) }));
+emailThUp?.addEventListener('change', () => saveMail({ thresholdUp: readThreshold(emailThUp, 3.9) }));
+emailThDown?.addEventListener('change', () => saveMail({ thresholdDown: readThreshold(emailThDown, 3.9) }));
 
 emailTestBtn?.addEventListener('click', async () => {
   if (emailTestResult) { emailTestResult.textContent = '发送中…'; emailTestResult.style.color = '#94a3b8'; }

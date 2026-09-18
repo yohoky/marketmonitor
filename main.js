@@ -71,9 +71,8 @@ const INI_TEMPLATE = `; ==================================================
 ;            pass             邮箱「授权码」——不是登录密码！QQ/163 需先在邮箱设置里开启 SMTP 并生成授权码
 ;            box1 ~ box5      收件邮箱槽位（最多 5 个）；列表用 mailboxes= 选择用哪几个
 ;            on1 ~ on5        槽位是否启用 true/false（地址留着但不启用 = 临时停用，不用删）
-;            followAlerts     true=邮件阈值跟随该列表的异动阈值（默认）；false=用下面的独立阈值
-;            thresholdUp      邮件涨幅阈值(%)，followAlerts=false 时生效
-;            thresholdDown    邮件跌幅阈值(%)，followAlerts=false 时生效
+;            （v1.5.5 起「邮件阈值」已下移到 [list:xx] 段，每个列表可各设一套；
+;              老配置里的 followAlerts / thresholdUp / thresholdDown 升级时会被复制到各列表）
 ;
 ;  [list:xx] 单个监控列表。这个段里：
 ;            · 不含 "=" 的行 = 一个标的（一行一个）
@@ -106,6 +105,11 @@ const INI_TEMPLATE = `; ==================================================
 ;                             11:35–13:00 午休期间一封都不发；某个时点没赶上（电脑休眠 / 程序没开）
 ;                             会在同一个交易时段内补推最近一次，跨时段或收盘后不补，避免打扰
 ;            digestIntervalMin interval 模式下的间隔（分钟），1~1440，默认 30
+;            followAlerts     true(默认) 邮件阈值跟随本列表的 alertUp / alertDown（一处改、两处生效）
+;                             false     邮件用下面单独设的阈值 —— 例如异动 3.9% 就闪屏提醒，
+;                                       但邮件只在 6% 才发（免得邮箱被小额波动刷屏）
+;            thresholdUp      邮件涨幅阈值(%)，followAlerts=false 时生效
+;            thresholdDown    邮件跌幅阈值(%)，followAlerts=false 时生效
 ;
 ;  [list:xx] 段可以复制多份（xx 只要互不相同即可），书写顺序 = 列表显示顺序。
 ;  下面这一段是空列表示例：把标的行加在设置下面即可（一行一个），
@@ -163,6 +167,9 @@ digestEnabled=false
 digestIntervalMin=30
 digestMode=fixed
 digestTimes=09:30,09:35,09:55,14:35,14:48,14:54
+followAlerts=true
+thresholdUp=3.9
+thresholdDown=3.9
 ;  ↓↓↓ 在这里写标的，一行一个，例如：600519 贵州茅台 / 000001 / hk00981 ↓↓↓
 ;  600519 贵州茅台
 ;  000001 平安银行
@@ -484,6 +491,12 @@ const DEFAULT_LIST_MAIL = {
   digestIntervalMin: DEFAULT_DIGEST_MIN,
   digestMode: DEFAULT_DIGEST_MODE,
   digestTimes: DEFAULT_DIGEST_TIMES,
+  // v1.5.5：邮件阈值也下沉到列表级（用户 2026-09-18 反馈「阈值跟随异动提醒」改不动）。
+  // followAlerts=true  → 邮件阈值跟随【本列表】的异动阈值（默认，行为与老版本一致）
+  // followAlerts=false → 用下面的 thresholdUp / thresholdDown（每个列表可以各设一套）
+  followAlerts: true,
+  thresholdUp: 3.9,
+  thresholdDown: 3.9,
 };
 
 // 列表数量上限：窗口太多既挤屏幕也容易误操作，给个明确上限
@@ -538,9 +551,22 @@ function normalizeIndexCode(raw) {
 //   键没写过 / 传 undefined  → 默认 [1]（老配置升级后行为不变）
 //   显式写空（"" 或 []）      → 保留空数组 = 这个列表不发邮件（否则重启后被悄悄改回 [1]）
 //   有值                     → 解析成有序去重的槽位号
-function normalizeMail(raw) {
+// v1.5.5 起列表级 mail 还带「邮件阈值」三件套：
+//   followAlerts   邮件阈值是否跟随【本列表】的异动阈值
+//   thresholdUp/Down  followAlerts=false 时生效
+// fallback 用于升级兜底：老配置里这三项只存在于全局 [email] 段，
+// 解析时把它们作为每个列表的默认值传进来 → 升级后行为与升级前完全一致。
+function normalizeMail(raw, fallback) {
   const r = raw || {};
-  const bool = (v, fb) => (v === undefined || v === '' ? fb : (String(v) !== 'false'));
+  const fb = fallback || {};
+  const bool = (v, fbv) => (v === undefined || v === '' ? fbv : (String(v) !== 'false'));
+  // 「本列表 → 全局兜底 → 硬编码默认」三级取值
+  const from = (k, dft) => {
+    if (r[k] !== undefined && r[k] !== '') return r[k];
+    if (fb[k] !== undefined && fb[k] !== '') return fb[k];
+    return dft;
+  };
+  const thr = (k, dft) => { const v = clampTh(from(k, dft)); return v === null ? dft : v; };
   const src = r.mailboxes;
   let arr;
   if (src === undefined || src === null) {
@@ -560,12 +586,17 @@ function normalizeMail(raw) {
     // 老配置没有这个字段 → 按默认 'fixed'（用户 2026-09-18 要求改用固定时点）
     digestMode: (String(r.digestMode) === 'interval' ? 'interval' : DEFAULT_DIGEST_MODE),
     digestTimes: normalizeDigestTimes(r.digestTimes),
+    followAlerts: bool(from('followAlerts', DEFAULT_LIST_MAIL.followAlerts), DEFAULT_LIST_MAIL.followAlerts),
+    thresholdUp: thr('thresholdUp', DEFAULT_LIST_MAIL.thresholdUp),
+    thresholdDown: thr('thresholdDown', DEFAULT_LIST_MAIL.thresholdDown),
   };
 }
 
 // 单个列表归一化。入参是"平铺"形态：INI 解出来的 { key: '字符串' }，
 // 或设置页 IPC 传来的同名字段对象（值可能是数字/布尔/数组）——两种都能吃。
-function normalizeList(raw, id, fallbackName) {
+// mailFallback 只给"读老配置"用：把全局 [email] 段的邮件阈值当默认值传进来，
+// 老配置升级后每个列表就自动继承原来的全局阈值，行为不变（见 normalizeMail）。
+function normalizeList(raw, id, fallbackName, mailFallback) {
   const r = raw || {};
   const has = (k) => r[k] !== undefined && r[k] !== '';
   const num = (k, d, lo, hi) => {
@@ -635,7 +666,11 @@ function normalizeList(raw, id, fallbackName) {
       // 漏掉它们会让设置页改的推送方式/时点被静默重置为默认值。
       digestMode: r.digestMode !== undefined ? r.digestMode : nestedMail.digestMode,
       digestTimes: r.digestTimes !== undefined ? r.digestTimes : nestedMail.digestTimes,
-    }),
+      // v1.5.5 邮件阈值三件套：同样平铺优先、否则取 mail 子对象，否则会丢掉设置页的改动
+      followAlerts: r.followAlerts !== undefined ? r.followAlerts : nestedMail.followAlerts,
+      thresholdUp: r.thresholdUp !== undefined ? r.thresholdUp : nestedMail.thresholdUp,
+      thresholdDown: r.thresholdDown !== undefined ? r.thresholdDown : nestedMail.thresholdDown,
+    }, mailFallback),
   };
 }
 
@@ -707,13 +742,20 @@ function migrateLegacy(sections) {
     return { symbol: s.symbol, name: s.name === s.symbol ? indexName(s.symbol) : s.name };
   }).filter(Boolean);
 
-  const lists = [normalizeList({ ...baseWin, ...baseAlerts, ...legacyDigest, symbols: stocks }, 'l1', '自选股')];
+  // v1.5.5：邮件阈值下沉到列表级 —— 旧配置只有全局 [email] 段，把它作为每个列表的兜底
+  const legacyEmail = normalizeEmail(em);
+  const mailFallback = {
+    followAlerts: legacyEmail.followAlerts,
+    thresholdUp: legacyEmail.thresholdUp,
+    thresholdDown: legacyEmail.thresholdDown,
+  };
+  const lists = [normalizeList({ ...baseWin, ...baseAlerts, ...legacyDigest, symbols: stocks }, 'l1', '自选股', mailFallback)];
   if (indexes.length) {
-    const l2 = normalizeList({ ...baseWin, ...baseAlerts, symbols: indexes }, 'l2', '板块指数');
+    const l2 = normalizeList({ ...baseWin, ...baseAlerts, symbols: indexes }, 'l2', '板块指数', mailFallback);
     l2.position = { x: 0, y: 0 };
     lists.push(l2);
   }
-  return { lists, email: normalizeEmail(flatSection(sections['email'])) };
+  return { lists, email: legacyEmail };
 }
 
 // 解析一份配置文本 → { lists, fetchIntervalMs, email, legacy }
@@ -727,15 +769,22 @@ function parseConfigText(rawText) {
   let legacy = false;
 
   if (listKeys.length) {
+    // 先把全局邮件段解析出来：它的阈值要作为每个列表的「升级兜底」交给 normalizeList，
+    // 这样老配置（列表里没有邮件阈值字段）升级后，每个列表默认继承原来的全局阈值。
+    email = normalizeEmail(flatSection(sections['email']));
+    const mailFallback = {
+      followAlerts: email.followAlerts,
+      thresholdUp: email.thresholdUp,
+      thresholdDown: email.thresholdDown,
+    };
     lists = listKeys.map((key) => {
       const id = key.slice(5).trim() || 'l1';
       const rows = sections[key] || [];
       const flat = flatSection(rows);
       // 不含 "=" 的行 = 标的
       const syms = rows.filter(l => l.indexOf('=') === -1).map(normalizeSymbolLine).filter(Boolean);
-      return normalizeList({ ...flat, symbols: syms }, id, '列表');
+      return normalizeList({ ...flat, symbols: syms }, id, '列表', mailFallback);
     });
-    email = normalizeEmail(flatSection(sections['email']));
   } else {
     const m = migrateLegacy(sections);
     lists = m.lists;
@@ -832,6 +881,10 @@ function saveConfig() {
       lines.push('digestIntervalMin=' + (l.mail?.digestIntervalMin ?? DEFAULT_DIGEST_MIN));
       lines.push('digestMode=' + (l.mail?.digestMode === 'interval' ? 'interval' : DEFAULT_DIGEST_MODE));
       lines.push('digestTimes=' + (l.mail?.digestTimes || DEFAULT_DIGEST_TIMES));
+      // v1.5.5 邮件阈值（列表级）：followAlerts=true 就跟随上面的 alertUp / alertDown，为 false 时用这两个
+      lines.push('followAlerts=' + (l.mail?.followAlerts !== false ? 'true' : 'false'));
+      lines.push('thresholdUp=' + (l.mail?.thresholdUp ?? DEFAULT_LIST_MAIL.thresholdUp));
+      lines.push('thresholdDown=' + (l.mail?.thresholdDown ?? DEFAULT_LIST_MAIL.thresholdDown));
       for (const s of (l.symbols || [])) {
         lines.push(s.symbol + (s.name && s.name !== s.symbol ? ' ' + s.name : ''));
       }
@@ -1184,15 +1237,20 @@ function mailToList(list) {
   return boxAddrsByIndex(store.email || DEFAULT_EMAIL, idx);
 }
 
-// 邮件判定配置：followAlerts=true 时阈值/方向/冷却/开盘时段全部跟随【该列表】的异动提醒
+// 邮件判定配置：阈值 / 方向 / 冷却 / 开盘时段都按【该列表】来。
+// v1.5.5 起「邮件阈值是否跟随异动阈值」也是每个列表自己的开关（list.mail.followAlerts）：
+//   true（默认）→ 用本列表的异动阈值（alertUp / alertDown），一处改两处生效
+//   false      → 用本列表单独设的邮件阈值（mail.thresholdUp / thresholdDown）
+// 注：方向 / 冷却 / 开盘时段三项始终跟随异动设置，只有「阈值」可以单独设。
 function buildMailAlertCfg(list) {
   if (!mailReadyForList(list)) return null;
-  const e = store.email;
   const a = (list && list.alerts) || DEFAULT_ALERTS;
+  const m = (list && list.mail) || DEFAULT_LIST_MAIL;
+  const follow = m.followAlerts !== false;
   return {
     enabled: true,
-    thresholdUp: e.followAlerts !== false ? a.thresholdUp : e.thresholdUp,
-    thresholdDown: e.followAlerts !== false ? a.thresholdDown : e.thresholdDown,
+    thresholdUp: follow ? a.thresholdUp : (m.thresholdUp ?? DEFAULT_LIST_MAIL.thresholdUp),
+    thresholdDown: follow ? a.thresholdDown : (m.thresholdDown ?? DEFAULT_LIST_MAIL.thresholdDown),
     direction: a.direction,
     cooldownMs: a.cooldownMs,
     tradingHours: a.tradingHours,
@@ -2532,6 +2590,10 @@ function listForUi(l) {
       // 设置页要靠这两个字段回显「推送方式 / 时点」，漏了会一直显示默认值（config 却已改）
       digestMode: m.digestMode === 'interval' ? 'interval' : DEFAULT_DIGEST_MODE,
       digestTimes: m.digestTimes || DEFAULT_DIGEST_TIMES,
+      // v1.5.5 邮件阈值（列表级）：设置页靠这三个回显「阈值跟随 / 涨 / 跌」，漏了就会显示成默认值
+      followAlerts: m.followAlerts !== false,
+      thresholdUp: m.thresholdUp ?? DEFAULT_LIST_MAIL.thresholdUp,
+      thresholdDown: m.thresholdDown ?? DEFAULT_LIST_MAIL.thresholdDown,
     },
     // 该列表实际会收到的收件地址（设置页用来回显"将发给谁"）
     toAddrs: mailToList(l).join(', '),
@@ -2748,8 +2810,15 @@ ipcMain.handle('import-config', async () => {
     return { ok: false, error: '这不是有效的 Marketmonitor 配置文件' };
   }
 
+  // 老版本导出的 JSON 里，邮件阈值只存在于 obj.email → 作为每个列表的兜底（导入后行为与导出前一致）
+  const impEmail = normalizeEmail(obj.email || {});
+  const importMailFallback = {
+    followAlerts: impEmail.followAlerts,
+    thresholdUp: impEmail.thresholdUp,
+    thresholdDown: impEmail.thresholdDown,
+  };
   const lists = obj.lists.slice(0, LIST_MAX).map((l, i) =>
-    normalizeList(l, String((l && l.id) || ('l' + (i + 1))), '列表 ' + (i + 1)));
+    normalizeList(l, String((l && l.id) || ('l' + (i + 1))), '列表 ' + (i + 1), importMailFallback));
   const gen = obj.general || {};
   const interval = Math.max(5000, Math.min(300000,
     parseInt(gen.fetchIntervalMs, 10) || store.fetchIntervalMs || 30000));
@@ -3107,6 +3176,17 @@ const REPO_URL = 'https://github.com/yohoky/marketmonitor';
 // 版本改动记录（只记 1.4.x，1.4.0 之前不收录）——设置页「关于」卡片直接渲染本数组。
 // 以后发新版只需在最前面加一条，渲染逻辑不用动。
 const CHANGELOG = [
+  {
+    v: '1.5.5', date: '2026-09-18',
+    items: [
+      '修复：邮件阈值「写死、改不动」—— 勾选「阈值跟随异动提醒」时两个阈值输入框被置灰（看着像写死），且重新勾上时框里显示的是全局旧值、和真正生效的值对不上（显示 bug）',
+      '邮件阈值改为「按列表各设一套」：每个列表自己决定是跟随本列表的异动阈值，还是单独设一个邮件阈值。设置页切到哪个列表，改的就是那个列表的设置',
+      '不跟随有什么用：异动 3.9% 就闪屏 / 弹通知（只看不吃力），邮件等到 6% 才发 —— 小波动不刷屏，只有大涨大跌才进邮箱',
+      '跟随时两个输入框置灰但会实时回显（当前列表异动涨 X% / 跌 Y%），不再让你猜；提示文字也会写明「跟随本列表异动阈值」还是「本列表单独设定」',
+      '老配置无损升级：原来全局 [email] 段里的阈值会自动复制给每个列表，升级后行为与升级前完全一致，不用重新配',
+      'config.ini 的每个 [list:xx] 段新增 followAlerts / thresholdUp / thresholdDown 三个字段；手工编辑 config.ini 的用户可继续在 [email] 段里写阈值作为兜底（列表段没写时继承它）',
+    ],
+  },
   {
     v: '1.5.4', date: '2026-09-18',
     items: [

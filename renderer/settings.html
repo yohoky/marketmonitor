@@ -13,7 +13,7 @@
         <h1>Marketmonitor 设置</h1>
         <p class="sub">每个「监控列表」是一个独立的悬浮小窗口，可分别监控自选股 / 板块指数 / 基金等，互不干扰</p>
       </div>
-      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）">v1.5.4</span>
+      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）">v1.5.5</span>
     </header>
 
     <!-- ============ 列表切换 ============ -->
@@ -262,9 +262,10 @@
         </div>
       </div>
 
-      <div class="size-row" style="margin-top:10px">
-        <label class="chk-label" style="flex:0 0 auto;min-width:186px">
-          <input type="checkbox" id="email-follow" checked /> 阈值跟随异动提醒
+      <div class="sub-title">当前列表的邮件阈值（每个列表各设一套）</div>
+      <div class="size-row">
+        <label class="chk-label" style="flex:0 0 auto;min-width:224px">
+          <input type="checkbox" id="email-follow" checked /> 邮件阈值跟随异动提醒
         </label>
         <label class="size-label">涨 ≥
           <input type="number" id="email-threshold-up" min="0.1" max="50" step="0.1" style="width:80px" />
@@ -272,7 +273,12 @@
         <label class="size-label">跌 ≥
           <input type="number" id="email-threshold-down" min="0.1" max="50" step="0.1" style="width:80px" />
         </label>
-        <span class="card-desc">% 才发邮件</span>
+        <span class="card-desc" id="email-thr-hint">% 才发邮件</span>
+      </div>
+      <div class="card-desc" style="margin-top:4px">
+        <b>勾选跟随</b>：本列表的「异动提醒」阈值是多少，邮件触发就用多少（两个输入框置灰、只作回显，改异动阈值即可）。<br/>
+        <b>取消跟随</b>：本列表单独设一套邮件阈值，和异动的触发值互不影响。典型用法：<b>异动 3.9% 就闪屏/弹通知</b>（只看不吃力），<b>邮件等到 6% 才发</b>，避免邮箱被频繁刷屏。<br/>
+        切换列表后这里会跟着变，改的是<b>当前列表</b>的设置；其余列表各管各的。
       </div>
       <div class="size-row" style="margin-top:8px">
         <label class="chk-label" style="flex:0 0 auto;min-width:186px">
@@ -326,9 +332,9 @@
     </section>
 
     <section class="card" id="about-card">
-      <div class="card-title"><span class="bar"></span>关于与更新 <span class="badge" id="about-ver">v1.5.4</span></div>
+      <div class="card-title"><span class="bar"></span>关于与更新 <span class="badge" id="about-ver">v1.5.5</span></div>
       <div class="size-row">
-        <span class="card-desc" style="flex:0 0 auto;min-width:170px">当前版本　<b id="about-version">v1.5.4</b></span>
+        <span class="card-desc" style="flex:0 0 auto;min-width:170px">当前版本　<b id="about-version">v1.5.5</b></span>
         <span class="card-desc">发布日期　<b id="about-builddate">—</b></span>
       </div>
       <div class="size-row" style="margin-top:8px">
