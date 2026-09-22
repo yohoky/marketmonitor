@@ -620,7 +620,7 @@ async function moveTo(anchor) {
     const p = await window.stockApi.setWidgetPosition(l.id, anchor);
     if (posReadout && p) posReadout.textContent = `X ${p.x} · Y ${p.y}`;
     const cur = activeList();
-    if (cur && p) cur.position = { x: p.x, y: p.y };
+    if (cur && p) { cur.position = { x: p.x, y: p.y }; cur.anchor = anchor; }
     renderListMeta();
   } catch (e) { console.error('setWidgetPosition 失败', e); }
 }
@@ -631,10 +631,12 @@ posGrid?.addEventListener('click', (e) => {
 });
 posDefaultBtn?.addEventListener('click', () => moveTo('bottom-right'));
 
-// 打开设置页 / 切换列表时，刷新坐标读数
+// 打开设置页 / 切换列表时，刷新坐标读数 + 高亮当前锚点
+// （位置现在以「锚点」持久化，换分辨率也贴对；高亮让用户一眼看出当前是哪个方位）
 async function renderPosition() {
   const l = activeList();
   if (!l) return;
+  markActiveCell(l.anchor || null);
   try {
     const p = await window.stockApi.getWidgetPosition(l.id);
     if (posReadout && p) posReadout.textContent = `X ${p.x} · Y ${p.y}`;

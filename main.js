@@ -15,8 +15,15 @@ const path = require('path');
 const fs = require('fs');
 const iconv = require('iconv-lite');
 
-// Windows 通知需要 AppUserModelID，否则 toast 不显示
-try { app.setAppUserModelId('Marketmonitor'); } catch (_) {}
+// Windows 通知要显示成"带应用名 + 图标"的完整样式，需要两个条件同时满足：
+//   1) 进程的 AppUserModelID 与打包 appId 一致（见 package.json → build.appId）
+//   2) 系统能按这个 AUMID 找到「应用身份」（显示名 + 图标）
+// 历史问题：这里原先写的是 'Marketmonitor'，而 appId 是 com.yohoky.marketmonitor，
+// 两者不一致；且安装包生成的开始菜单快捷方式里实测【没有写 AUMID】（读取 lnk 字节确认）。
+// 两头都对不上 → Windows 无法归属这条通知 → 退化成"无应用名、无图标"的最简小卡片。
+// 现在统一用 appId，并由 ensureAppIdentity() 给该 AUMID 补上显示名与图标。
+const APP_AUMID = 'com.yohoky.marketmonitor';
+try { app.setAppUserModelId(APP_AUMID); } catch (_) {}
 
 // 部分机器显卡驱动下 GPU 进程会崩溃（GPU process exited unexpectedly），一旦独立 GPU 进程崩溃，
 // 透明 + alwaysOnTop 窗口的合成输出会变空白（进程活着、任务栏有预览，但屏上没内容）。
@@ -462,6 +469,15 @@ const LIST_WIN_DEFAULTS = {
   position: { x: 0, y: 0 }, visible: true,
 };
 
+// ---------- 位置锚点（九宫格）----------
+// 位置不再只存"绝对像素"，而是优先存"锚点"或"相对比例"：
+//   · anchor  ：九宫格之一 → 每次启动/换分辨率都按【当前工作区】重算，上下左右永远贴对
+//   · posRatio：自由摆放 → 记 0~1 的相对位置，分辨率变了按比例还原，不会跑偏
+// 这样"分辨率变了就放不对位置"的根因（存死像素）就被消除了。
+const ANCHORS = ['top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right'];
+const EDGE_MARGIN = 12;   // 距屏幕边缘留白
+const isAnchor = (v) => ANCHORS.indexOf(String(v)) >= 0;
+
 // 定时汇总的两种模式：
 //   fixed    —— 按固定时点推（默认）
 //   interval —— 每隔 digestIntervalMin 分钟推一次
@@ -652,8 +668,16 @@ function normalizeList(raw, id, fallbackName, mailFallback) {
     },
     visible: bool('visible', LIST_WIN_DEFAULTS.visible),
     // 用户是否【亲手】摆过这个列表的位置（拖过窗口 / 点过九宫格 = true）。
-    // true → 启动时原样保留他存的坐标；false → 按列表顺序自动落位（见 slotPositionFor）。
+    // true → 按他指定的锚点/相对比例摆放；false → 按列表顺序自动落位（见 slotPositionFor）。
     manualPosition: bool('manualPosition', false),
+    // 九宫格锚点：只要有值，位置就永远按当前工作区重算（分辨率无关）
+    anchor: isAnchor(r.anchor) ? String(r.anchor) : null,
+    // 自由摆放的相对位置（0~1）：分辨率变了按比例还原，不会跑偏
+    posRatio: (() => {
+      const rx = parseFloat(r.posRx), ry = parseFloat(r.posRy);
+      if (!isFinite(rx) || !isFinite(ry)) return null;
+      return { rx: Math.max(0, Math.min(1, rx)), ry: Math.max(0, Math.min(1, ry)) };
+    })(),
     alerts: normalizeAlerts({
       enabled: r.alertEnabled, thresholdUp: r.alertUp, thresholdDown: r.alertDown,
       direction: r.alertDirection, sound: r.alertSound, cooldownMs: r.alertCooldownMs,
@@ -869,6 +893,10 @@ function saveConfig() {
       lines.push('position-y=' + (l.position?.y || 0));
       lines.push('visible=' + (l.visible ? 'true' : 'false'));
       lines.push('manualPosition=' + (l.manualPosition ? 'true' : 'false'));
+      // 位置锚点 / 相对比例（分辨率无关的位置表达；anchor 优先）
+      lines.push('anchor=' + (isAnchor(l.anchor) ? l.anchor : ''));
+      lines.push('posRx=' + (l.posRatio && isFinite(l.posRatio.rx) ? l.posRatio.rx : ''));
+      lines.push('posRy=' + (l.posRatio && isFinite(l.posRatio.ry) ? l.posRatio.ry : ''));
       const a = l.alerts || DEFAULT_ALERTS;
       lines.push('alertEnabled=' + (a.enabled ? 'true' : 'false'));
       lines.push('alertUp=' + (a.thresholdUp ?? DEFAULT_ALERTS.thresholdUp));
@@ -947,6 +975,49 @@ function eachWidget(fn) {
 // 广播：透明度 / 黑白 / 显示方式这类"所有窗口一起变"的消息
 function broadcast(channel, ...args) {
   eachWidget((w) => { try { w.webContents.send(channel, ...args); } catch (_) {} });
+}
+
+// ---------- 置顶（alwaysOnTop）兜底：强制重新下发 + 规避 Windows 任务栏重排 ----------
+// 关键事实 1：Electron 的 isAlwaysOnTop() 返回的是**内部 widget 层级**，不是 OS 窗口的真实状态。
+//   Windows/DWM 会在这些时机偷偷摘掉窗口的 WS_EX_TOPMOST：
+//     · 更换显示器 / 改分辨率 / 改缩放（工作区尺寸突变，见 screenlog.txt 的 wa 字段）
+//     · 窗口 hide() → show() 之后
+//   此后 Electron 仍以为自己是置顶，于是再调 setAlwaysOnTop(true) 可能不会真正下发。
+//
+// 关键事实 2（本案真凶）：setAlwaysOnTop(true) **不传 level 时默认 'floating'**。
+//   Electron 在 Windows 上对 {floating, torn-off-menu, modal-panel, main-menu, status}
+//   这几个 level 会置 behind_task_bar_ = true，并调用 MoveBehindTaskBarIfNeeded()：
+//       ::SetWindowPos(hwnd, taskbar_hwnd, 0,0,0,0, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)
+//   也就是把窗口"插到任务栏之后"。一旦任务栏处于自动隐藏 / 无 GPU 软件合成等状态
+//   （本项目 1.4→1.5 期间工作区从 1920×1040 突变为 2240×1360 正是这种场景），
+//   这一步会把小组件踢出置顶带 → 表现就是"被普通窗口遮挡、重启也无效、怎么切都拉不回来"。
+//   对策：显式传一个**不属于该集合**的 level（'screen-saver'）。
+//   level 不改变 z-order（top=true 一律 kFloatingWindow，仍是置顶），
+//   但它不在集合里 → behind_task_bar_ 保持 false → 不再走任务栏重排。
+//
+// 关键事实 3：层级"没变"时重复调用可能不再真正下发 SetWindowPos，
+//   所以先显式关掉、再打开，强制层级发生变化以确保一定重新下发。
+//
+// 结论：forceTopMost = 先关 → 以 level='screen-saver' 开 → moveTop()。
+const TOPMOST_LEVEL = 'screen-saver';
+function forceTopMost(win, want) {
+  if (!win || win.isDestroyed()) return;
+  want = !!want;
+  try {
+    win.setAlwaysOnTop(false);
+    if (want) {
+      win.setAlwaysOnTop(true, TOPMOST_LEVEL);
+      try { win.moveTop(); } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+// 对全部小组件窗口重新下发置顶（按各列表 config 的 topMost）
+function reassertTopMostAll() {
+  eachWidget((w, id) => {
+    const l = getList(id);
+    forceTopMost(w, l ? l.topMost : false);
+  });
 }
 
 // 只发给某个列表的窗口
@@ -1176,6 +1247,41 @@ function stateFor(map, listId) {
   };
 }
 
+// ---------- 通知身份（让 Windows 通知显示应用名 + 图标）----------
+// 关键事实（Electron 文档 + 实测）：Windows 通知的「应用名 + 图标」由 **AUMID 归属**决定，
+// 而不是由 Notification 的 icon 参数决定。归属来自"开始菜单里带该 AUMID 的快捷方式"，
+// 或注册表 AppUserModelId 项。本安装包（NSIS）生成的快捷方式实测没有写 AUMID，
+// 所以这里补一条注册表身份（仅当前用户 HKCU，不需要管理员）：
+//   HKCU\SOFTWARE\Classes\AppUserModelId\<AUMID>
+//     DisplayName = Marketmonitor
+//     IconUri     = <exe 路径>
+// IconUri 必须指向 Windows 能直接读取的真实文件 → 用 exe（打包时已把 icon.ico 嵌进 exe）。
+// 【不能用】assets 下的图标路径：那些文件在 app.asar 内，Windows 读不了 asar 包。
+// 只在打包版执行；失败静默 —— 这纯属外观优化，绝不能拖累启动。
+function ensureAppIdentity() {
+  if (!app.isPackaged) return;
+  try {
+    const { execFile } = require('child_process');
+    const key = 'HKCU\\SOFTWARE\\Classes\\AppUserModelId\\' + APP_AUMID;
+    const vals = [['DisplayName', 'Marketmonitor'], ['IconUri', process.execPath]];
+    for (const [name, value] of vals) {
+      execFile('reg.exe', ['add', key, '/v', name, '/t', 'REG_SZ', '/d', value, '/f'],
+        { windowsHide: true }, () => {});
+    }
+  } catch (_) {}
+}
+
+// 通知大图标（256×256）。Windows 上主要仍取 AUMID 关联的图标，
+// 这里一并带上，保证在支持该参数的平台/系统版本上也能显示。
+let _alertIcon;
+function alertIcon() {
+  if (_alertIcon === undefined) {
+    try { _alertIcon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon_256.png')); }
+    catch (_) { _alertIcon = null; }
+  }
+  return _alertIcon || undefined;
+}
+
 // 触发一次提醒：系统通知 + 推送到【该列表】的小组件（提示音 / 闪烁 / 弹窗）
 function fireAlert(a, list) {
   const l = list || null;
@@ -1189,6 +1295,7 @@ function fireAlert(a, list) {
         title,
         body,
         silent: !(l && l.alerts && l.alerts.sound),
+        icon: alertIcon(),   // 大图标（Windows 的归属图标由 AUMID 决定，这里一并带上做兼容）
       });
       n.on('click', () => {
         const w = l ? widgetWindows.get(l.id) : null;
@@ -1998,6 +2105,9 @@ function snapToCorner(listId, anchor) {
   try {
     w.setPosition(np.x, np.y);
     l.position = np;
+    // 贴上某个角 → 把"锚点"记下来（分辨率无关），清掉比例
+    l.anchor = anchor;
+    l.posRatio = null;
     return true;
   } catch (e) { logErr('snapToCorner', e); return false; }
 }
@@ -2020,14 +2130,20 @@ function applyWidgetSize(listId) {
 
     // 改完尺寸按新尺寸重新贴回那个角，保证始终严丝合缝贴边
     // （否则右下角位置是基于旧宽高算的，一改尺寸就会偏移）
-    snapToCorner(listId, anchor);
+    if (anchor) {
+      snapToCorner(listId, anchor);
+    } else {
+      // 自由摆放：尺寸变了，相对比例要按【新尺寸】重算，否则比例分母失真、
+      // 下次启动位置会偏。这里直接重算比例，不再做贴角判定（避免尺寸变大后误判成贴角）。
+      const np2 = w.getPosition();
+      rememberRatio(l, np2[0], np2[1], l.width, l.height);
+    }
+    saveConfig();
   } catch (e) { logErr('applyWidgetSize', e); }
 }
 
 // ---------- 屏幕位置（九宫格锚点）----------
-// anchor: top-left / top / top-right / left / center / right / bottom-left / bottom / bottom-right
-const EDGE_MARGIN = 12;   // 距屏幕边缘留白
-const ANCHORS = ['top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right'];
+// 常量 ANCHORS / EDGE_MARGIN 已上移到 LIST_WIN_DEFAULTS 附近（normalizeList 要用）。
 
 // 按【该列表自己的宽高】算锚点坐标（多列表尺寸不同，不能再用全局尺寸）
 function computeAnchoredPosition(anchor, l) {
@@ -2066,6 +2182,112 @@ function ensureOnScreen(pos, winW, winH) {
     const okY = (pos.y + winH) > wa.y + TOL && pos.y < wa.y + wa.height - TOL;
     return okX && okY;
   } catch (_) { return true; }
+}
+
+// 当前主屏工作区（排除任务栏）。屏幕 API 偶发不可用 → 返回 null，调用方自行兜底。
+function getWorkArea() {
+  try {
+    const a = screen.getPrimaryDisplay().workArea;
+    return { x: a.x, y: a.y, width: a.width, height: a.height };
+  } catch (_) { return null; }
+}
+
+// 【分辨率无关】的位置解析：决定"这个列表该待在哪儿"，优先级从高到低：
+//   1) 九宫格锚点 anchor → 永远按当前工作区重算（上下左右永远贴对，换分辨率也不跑偏）
+//   2) 相对比例 posRatio → 自由摆放按比例还原（分辨率变了按比例缩放，不会偏到屏外）
+//   3) 老配置兼容：有手放坐标且在屏内 → 原样用（不打扰用户已摆好的位置）
+//   4) 自动槽位 slotPositionFor（没亲手摆过的列表按顺序落位）
+function resolveListPosition(l) {
+  const W = (l && l.width) || LIST_WIN_DEFAULTS.width;
+  const H = (l && l.height) || LIST_WIN_DEFAULTS.height;
+  if (l && isAnchor(l.anchor)) return computeAnchoredPosition(l.anchor, l);
+  if (l && l.posRatio && isFinite(l.posRatio.rx) && isFinite(l.posRatio.ry)) {
+    const wa = getWorkArea();
+    if (wa) {
+      const spanX = Math.max(1, wa.width - W);
+      const spanY = Math.max(1, wa.height - H);
+      const rx = Math.max(0, Math.min(1, l.posRatio.rx));
+      const ry = Math.max(0, Math.min(1, l.posRatio.ry));
+      return { x: wa.x + Math.round(rx * spanX), y: wa.y + Math.round(ry * spanY) };
+    }
+  }
+  if (l && l.manualPosition === true && l.position && ensureOnScreen(l.position, W, H)) {
+    return { x: l.position.x, y: l.position.y };
+  }
+  return slotPositionFor(l);
+}
+
+// 按解析结果把窗口摆好，并回写 position 让配置保持自洽
+function applyResolvedPosition(listId) {
+  const l = getList(listId);
+  const w = widgetWindows.get(listId);
+  if (!l || !w || w.isDestroyed()) return false;
+  const np = resolveListPosition(l);
+  try {
+    const p = w.getPosition();
+    if (p[0] !== np.x || p[1] !== np.y) w.setPosition(np.x, np.y);
+    l.position = { x: np.x, y: np.y };
+    return true;
+  } catch (e) { logErr('applyResolvedPosition', e); return false; }
+}
+
+// 记成"相对比例"：自由摆放的位置按工作区比例存（rx/ry ∈ 0~1）。
+// 比例用 (工作区尺寸 - 窗口尺寸) 作分母，所以 rx=1 恰好贴右边缘、rx=0 恰好贴左边缘。
+function rememberRatio(l, x, y, winW, winH) {
+  if (!l) return;
+  const wa = getWorkArea();
+  if (!wa) return;
+  const spanX = Math.max(1, wa.width - winW);
+  const spanY = Math.max(1, wa.height - winH);
+  l.anchor = null;
+  l.posRatio = {
+    rx: Math.max(0, Math.min(1, (x - wa.x) / spanX)),
+    ry: Math.max(0, Math.min(1, (y - wa.y) / spanY)),
+  };
+  l.position = { x, y };
+}
+
+// 把一次落点记成"跨分辨率"的表达：贴角 → 记锚点（精确贴边）；自由摆放 → 记相对比例。
+// 这是"位置不再因分辨率变化而放错"的关键：以后一律按锚点/比例还原，而不是死记像素。
+function rememberPosition(l, x, y, winW, winH) {
+  if (!l) return;
+  const anchor = detectCorner({ x, y }, { width: winW, height: winH });
+  if (anchor) {
+    l.anchor = anchor;
+    l.posRatio = null;
+    l.position = computeAnchoredPosition(anchor, l);
+  } else {
+    rememberRatio(l, x, y, winW, winH);
+  }
+}
+
+// 【一次性迁移】把"亲手摆过、但只记了绝对像素"的老列表，转成锚点 / 比例表达。
+// 背景：位置模型升级为「锚点 → 比例 → 老像素 → 槽位」后，老配置里只有 position-x/y，
+// 换分辨率时它们会沿用旧像素 → 上下左右漂移（正是用户要求避免的情况）。
+// 这里按【当前坐标 + 当前工作区】推断它贴的哪个角（记 anchor）或相对位置（记 posRatio）：
+//   · 贴着角 → 以后换任何分辨率都精确贴同一个角（最稳）
+//   · 浮在中间 → 记比例，分辨率变了按比例缩放，不会偏到屏外
+// 幂等：迁移后 anchor / posRatio 必有其一，后续启动不会重复处理。
+function migrateLegacyPositions() {
+  let changed = 0, anchored = 0, ratio = 0;
+  for (const l of (store.lists || [])) {
+    if (!l || l.manualPosition !== true) continue;                                   // 没亲手摆过 → 走自动槽位
+    if (isAnchor(l.anchor)) continue;                                                // 已是锚点
+    if (l.posRatio && isFinite(l.posRatio.rx) && isFinite(l.posRatio.ry)) continue;  // 已是比例
+    if (!l.position || !isFinite(l.position.x) || !isFinite(l.position.y)) continue; // 没坐标可推
+    rememberPosition(l, l.position.x, l.position.y,
+      l.width || LIST_WIN_DEFAULTS.width, l.height || LIST_WIN_DEFAULTS.height);
+    if (l.anchor) anchored++; else ratio++;
+    changed++;
+  }
+  if (changed) {
+    saveConfig();
+    try {
+      fs.appendFileSync(path.join(APP_DIR, 'screenlog.txt'),
+        JSON.stringify({ t: new Date().toISOString(), ev: 'migratePos', changed, anchored, ratio }) + '\n', 'utf8');
+    } catch (_) {}
+  }
+  return changed;
 }
 
 // 按【列表顺序】算出该列表的固定槽位：列表 1 = 最右下角，列表 2 在它上方，依次往上堆。
@@ -2128,13 +2350,9 @@ function createWidgetWindow(listId) {
   const alive = widgetWindows.get(listId);
   if (alive && !alive.isDestroyed()) return alive;
 
-  // 坐标来源只有两种：
-  //  · 用户亲手摆过（manualPosition=true）且坐标还在屏内 → 用他存的那份
-  //  · 否则 → 按列表顺序算固定槽位（列表 1 贴右下角，其余依次排在上方）
-  const saved = cfg.position;
-  const useSaved = cfg.manualPosition === true && saved
-    && ensureOnScreen(saved, cfg.width || 220, cfg.height || 88);
-  const pos = useSaved ? saved : slotPositionFor(cfg);
+  // 位置统一由 resolveListPosition 解析：锚点（九宫格）→ 相对比例 → 老坐标 → 自动槽位。
+  // 前两者都是"分辨率无关"的表达，所以换显示器/改分辨率后"上下左右"依然贴对。
+  const pos = resolveListPosition(cfg);
 
   const win = new BrowserWindow({
     width: cfg.width,
@@ -2146,7 +2364,10 @@ function createWidgetWindow(listId) {
     backgroundColor: '#00000000',    // 全透明底，卡片由渲染层 CSS 绘制
     resizable: false,
     movable: true,
-    alwaysOnTop: cfg.topMost,
+    // 不用 alwaysOnTop 构造项：它只能落默认 level('floating')，创建瞬间就会被
+    // MoveBehindTaskBarIfNeeded() 插到任务栏之后（VM / 软件合成下会掉出置顶带）。
+    // 改为创建后调用 forceTopMost()，以 level='screen-saver' 显式置顶。
+    alwaysOnTop: false,
     skipTaskbar: true,           // 不占任务栏
     hasShadow: false,           // 透明窗口关闭系统阴影，卡片自带 box-shadow
     paintWhenInitiallyHidden: true,   // 避免首帧白闪
@@ -2161,6 +2382,9 @@ function createWidgetWindow(listId) {
   });
   widgetWindows.set(listId, win);
   winListId.set(win, listId);
+
+  // 创建后立即以正确 level 置顶一次（构造项已改成 false，见上文说明）
+  forceTopMost(win, cfg.topMost);
 
   win.setMenuBarVisibility(false);
   // 显式声明边界，避免 Electron 把创建尺寸当成 minimumSize（否则后续无法调小）
@@ -2191,6 +2415,20 @@ function createWidgetWindow(listId) {
     }, 15);
   });
 
+  // 置顶健壮性修复：透明 + alwaysOnTop 窗口在 Windows 上偶尔会被 DWM / 其它置顶窗口
+  // 在 show() 之后把层级重置掉，表现就是"被其它程序遮挡、重启也无效"。
+  // 这里每次显示都重新断言一次 alwaysOnTop，确保它始终在最上层。
+  win.on('show', () => {
+    forceTopMost(win, getList(listId).topMost);
+  });
+
+  // 获焦兜底：调整设置（设置窗抢焦点）后图层可能被 DWM 重置，
+  // 设置窗关闭、widget 重新获焦时这里再拉回置顶，覆盖"动一下设置就失效"的盲区。
+  // 同样零定时器开销，纯事件驱动。
+  win.on('focus', () => {
+    forceTopMost(win, getList(listId).topMost);
+  });
+
   win.once('ready-to-show', () => {
     const cur = getList(listId);
     if (!cur) return;
@@ -2211,32 +2449,21 @@ function createWidgetWindow(listId) {
     try { win.webContents.send('scroll-ms', cur.scrollMs || 3000); } catch (_) {}
     try { win.webContents.send('jump-ms', cur.jumpMs || 3000); } catch (_) {}
 
-    // 启动贴角精修：若 config 保存的位置在贴角容差内，帮用户对齐到精确像素；
-    // 用户拖到中间时不打扰。并做越界拉回。
+    // 启动落位：一律由 resolveListPosition 说了算（锚点 / 相对比例 / 老坐标 / 自动槽位）。
+    // 这样做的两个好处：
+    //  ① 分辨率没变时结果与用户存的坐标完全一致 → 不会"没贴角就被弹回右下角"；
+    //  ② 分辨率变了（换显示器/改缩放）→ 锚点/比例重新贴合到正确的上下左右，不会放错位置。
     const wa = (() => { try { const a = screen.getPrimaryDisplay().workArea; return { x: a.x, y: a.y, w: a.width, h: a.height }; } catch (_) { return null; } })();
     let finalP = null, sz = null, onScreen = null, wasClamped = false;
     try {
       const p = win.getPosition();
       sz = win.getSize();
-      let np;
-      if (cur.manualPosition === true) {
-        // 用户亲手摆过 → 原样保留他的坐标（贴角时顺手精修到精确像素）。
-        // 注意：这里【绝不能】因为"没贴角"就重置位置 —— 那会让拖到屏幕中间的位置
-        // 每次重启都被弹回右下角，表现就是"位置拖了也存不下来"。
-        const a = detectCorner({ x: p[0], y: p[1] }, { width: sz[0], height: sz[1] });
-        np = a ? computeAnchoredPosition(a, cur) : { x: p[0], y: p[1] };
-        // 唯一会动他位置的情况：坐标跑到屏幕外（换显示器 / 改分辨率）
-        if (!ensureOnScreen(np, sz[0], sz[1])) { np = slotPositionFor(cur); wasClamped = true; }
-      } else {
-        // 没亲手摆过 → 按列表顺序落位。每次都算成同一个结果，
-        // 所以"自选股贴右下角、指数在它上面"不会因为启动顺序不同而变化。
-        np = slotPositionFor(cur);
-        if (np.x !== p[0] || np.y !== p[1]) wasClamped = true;
-      }
+      const np = resolveListPosition(cur);
       if (np.x !== p[0] || np.y !== p[1]) {
         win.setPosition(np.x, np.y);
-        cur.position = np;
+        wasClamped = true;
       }
+      cur.position = np;
       finalP = { x: np.x, y: np.y };
       onScreen = ensureOnScreen(np, sz[0], sz[1]);
       saveConfig();
@@ -2335,20 +2562,22 @@ function destroyWidgetWindow(listId) {
   }
 }
 
-// 没被用户亲手摆过位置的列表：把它挪回"按列表顺序算出来"的那个槽位。
-// 什么时候要调：它第一次显示、以及之后每次从隐藏状态被打开之前。
-// 手动拖过 / 点过九宫格的列表（manualPosition=true）一律不打扰。
+// 显示前统一归位：位置一律由 resolveListPosition 解析（锚点 / 相对比例 / 自动槽位）。
+// 什么时候要调：列表第一次显示、以及之后每次从隐藏状态被打开之前。
+// 注意：这里【不再】因为 manualPosition=true 就跳过 —— 手动摆过 / 点过九宫格的列表
+// 现在记的是"锚点/相对比例"，按解析结果重新摆一遍只会让它在分辨率变化后回到正确位置，
+// 分辨率没变时结果与原来完全一致（不会把用户摆好的位置挪走）。
 function applyAutoSlotIfNeeded(listId) {
   const l = getList(listId);
   const w = widgetWindows.get(listId);
-  if (!l || l.manualPosition === true) return false;
-  const np = slotPositionFor(l);
+  if (!l) return false;
+  const np = resolveListPosition(l);
   let changed = false;
   try {
-    // ① config 里的坐标也要跟上：窗口是新建的，创建时就按槽位摆好了，
+    // ① config 里的坐标也要跟上：窗口是新建的，创建时就按解析结果摆好了，
     //    若这里只看窗口位置就提前返回，config 会一直残留旧坐标（设置页读数会骗人）。
     if (!l.position || l.position.x !== np.x || l.position.y !== np.y) { l.position = np; changed = true; }
-    // ② 窗口（如果已经建好）也摆到槽位
+    // ② 窗口（如果已经建好）也摆到该位置
     if (w && !w.isDestroyed()) {
       const [x, y] = w.getPosition();
       if (x !== np.x || y !== np.y) { w.setPosition(np.x, np.y); changed = true; }
@@ -2415,13 +2644,14 @@ function openSettings(listId) {
     settingsWindow.focus();
     return true;
   }
-  // 默认高度 = 主屏「工作区」高度（已排除任务栏），打开设置就能一屏看全，无需手动拉大
+  // 默认高度 = 屏幕高度的一半（用户 2026-09-21 要求）。
+  // 仍保证：不小于 360px、且不超过工作区高度（免得标题栏/任务栏被顶出去）。
   let initH = 520;
   let initY;
   try {
-    const wa = screen.getPrimaryDisplay().workArea;
-    initH = Math.max(480, wa.height);
-    initY = wa.y;
+    const d = screen.getPrimaryDisplay();
+    initH = Math.max(360, Math.min(Math.round(d.size.height / 2), d.workArea.height));
+    initY = d.workArea.y;
   } catch (_) {}
   settingsWindow = new BrowserWindow({
     width: 640,
@@ -2437,7 +2667,12 @@ function openSettings(listId) {
   });
   // 用 query 传初始列表：渲染层加载时就能直接定位到对应 Tab
   settingsWindow.loadFile('renderer/settings.html', target ? { query: { list: target } } : undefined);
-  settingsWindow.on('closed', () => { settingsWindow = null; });
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
+    // 设置窗关闭后，所有 widget 重新抢回置顶：动设置期间图层可能被 DWM 重置，
+    // 这里一次性兜底全部重断言，避免"设置改完回来发现被遮挡"。
+    reassertTopMostAll();
+  });
   return true;
 }
 
@@ -2548,6 +2783,9 @@ async function tick() {
   if (ticking) return;   // 上一轮还没回来（网络慢）时跳过，避免请求叠加
   ticking = true;
   try {
+    // 周期性自愈：窗口被其它程序静默遮挡时不会触发 show/focus 任何事件，
+    // 只能靠这里搭现有 30 秒刷新周期的车重新下发一次置顶（不新增定时器，开销可忽略）。
+    reassertTopMostAll();
     const quotes = await fetchQuotes(allSymbols());
     const lists = store.lists || [];
     const prime = !alertPrimed && !!(quotes && quotes.length);
@@ -2581,6 +2819,7 @@ function listForUi(l) {
     width: l.width,
     height: l.height,
     topMost: !!l.topMost,
+    anchor: isAnchor(l.anchor) ? l.anchor : null,   // 供设置页九宫格高亮当前锚点
     opacity: l.opacity,
     textOpacity: l.textOpacity ?? 1.0,
     mono: !!l.mono,
@@ -2674,6 +2913,10 @@ ipcMain.handle('save-list', (_e, listId, patch) => {
     position: pick('position', l.position),
     visible: pick('visible', l.visible),
     manualPosition: pick('manualPosition', l.manualPosition),
+    // 位置锚点 / 相对比例：设置页保存时不能被冲掉（flat 键，与 INI 读写一致）
+    anchor: pick('anchor', l.anchor),
+    posRx: pick('posRx', l.posRatio ? l.posRatio.rx : undefined),
+    posRy: pick('posRy', l.posRatio ? l.posRatio.ry : undefined),
     alerts: pick('alerts', l.alerts),
     mail: pick('mail', l.mail),
   }, listId, l.name);
@@ -2698,7 +2941,7 @@ ipcMain.handle('save-list', (_e, listId, patch) => {
   if (p.name !== undefined) sendToList(listId, 'list-name', l.name);
   if (p.topMost !== undefined) {
     const w = widgetWindows.get(listId);
-    if (w && !w.isDestroyed()) { try { w.setAlwaysOnTop(!!l.topMost); } catch (_) {} }
+    if (w && !w.isDestroyed()) forceTopMost(w, l.topMost);
   }
   if (p.visible !== undefined) {
     const w = widgetWindows.get(listId);
@@ -2999,9 +3242,13 @@ ipcMain.handle('probe-index', async (_e, raw) => {
 ipcMain.handle('set-widget-position', (_e, listId, anchor) => {
   const l = getList(listId);
   if (!l) return null;
-  const pos = computeAnchoredPosition(String(anchor || 'bottom-right'), l);
+  const a = isAnchor(anchor) ? String(anchor) : 'bottom-right';
+  const pos = computeAnchoredPosition(a, l);
   l.position = pos;
-  l.manualPosition = true;   // 用户在设置页主动指定了位置 → 之后启动原样保留
+  l.manualPosition = true;   // 用户在设置页主动指定了位置 → 之后启动按锚点还原
+  // 记下锚点（分辨率无关）：以后换显示器/改分辨率都按当前工作区重算，上下左右永远贴对
+  l.anchor = a;
+  l.posRatio = null;
   const w = widgetWindows.get(listId);
   if (w && !w.isDestroyed()) {
     try { w.setPosition(pos.x, pos.y); } catch (e) { logErr('setPosition', e); }
@@ -3071,8 +3318,17 @@ ipcMain.on('widget-drag-end', (e) => {
     if (l) {
       try {
         const [x, y] = w.getPosition();
+        const sz = w.getSize();
         l.position = { x, y };
         l.manualPosition = true;   // 用户亲手摆过 → 以后启动都原样保留这个位置
+        // 记成"跨分辨率"的表达：贴角 → 锚点（精确贴边）；自由摆放 → 相对比例。
+        // 这样以后换显示器/改分辨率，"上下左右"依然贴对，而不是死认这次拖出来的像素。
+        rememberPosition(l, x, y, sz[0], sz[1]);
+        if (l.anchor) {   // 拖到角附近 → 顺手精确吸附到边缘
+          const np = computeAnchoredPosition(l.anchor, l);
+          w.setPosition(np.x, np.y);
+          l.position = np;
+        }
       } catch (_) {}
     }
   }
@@ -3083,8 +3339,12 @@ ipcMain.handle('widget-toggle-topmost', (e) => {
   const w = BrowserWindow.fromWebContents(e.sender);
   const l = listOfWindow(w);
   if (!w || !l || w.isDestroyed()) return false;
-  const next = !w.isAlwaysOnTop();
-  try { w.setAlwaysOnTop(next); } catch (_) {}
+  // 以 config 真值为准，绝不信 isAlwaysOnTop()：
+  // 透明 + alwaysOnTop 窗在 Windows 上被 DWM 偷偷摘顶后，Electron 的
+  // isAlwaysOnTop() 仍返回 true，用 !isAlwaysOnTop() 算 next 会永远得到 false，
+  // 表现就是"切了一下置顶就被遮挡、且再也切不回来"。改用 config.topMost 翻转即可双向正确。
+  const next = !l.topMost;
+  forceTopMost(w, next);
   l.topMost = next;
   saveConfig();
   return next;
@@ -3107,6 +3367,9 @@ function showAllWidgets() {
       if (!w.isVisible()) w.show();
       if (w.isMinimized()) w.restore();
     } catch (e) { logErr('showAllWidgets', e); }
+    // 已可见的窗口不会触发 show 事件，这里也要显式重新下发一次置顶，
+    // 否则"右键 → 显示全部小组件"对已被遮挡的窗口完全无效。
+    forceTopMost(w, l ? l.topMost : false);
   });
 }
 
@@ -3157,6 +3420,8 @@ function createTray() {
   const menu = Menu.buildFromTemplate([
     { label: '显示全部小组件', click: () => { try { showAllWidgets(); } catch (e) { logErr('showAllWidgets', e); } } },
     { label: '隐藏全部小组件', click: () => { try { hideAllWidgets(); } catch (e) { logErr('hideAllWidgets', e); } } },
+    // 手动自救：被其它程序遮挡时点这里立即强制重新置顶（等价于程序内每 30 秒自动做的那次）
+    { label: '重新置顶（被遮挡时点这里）', click: () => { try { reassertTopMostAll(); } catch (e) { logErr('reassertTopMost', e); } } },
     { type: 'separator' },
     ...(listItems.length ? [{ label: '监控列表', submenu: listItems }, { type: 'separator' }] : []),
     { label: '设置...', click: () => { try { openSettings(); } catch (e) { logErr('openSettings', e); } } },
@@ -3183,6 +3448,26 @@ const REPO_URL = 'https://github.com/yohoky/marketmonitor';
 // 版本改动记录（只记 1.4.x，1.4.0 之前不收录）——设置页「关于」卡片直接渲染本数组。
 // 以后发新版只需在最前面加一条，渲染逻辑不用动。
 const CHANGELOG = [
+  {
+    v: '1.5.7', date: '2026-09-21',
+    items: [
+      '修复：悬浮小组件（widget）不置顶、被其它程序窗口挡住，且重启无效、反复切换也拉不回来（用户 2026-09-21 反馈）',
+      '根因（本次真凶）：原来设置置顶时没有指定层级，Electron 默认用 "floating"；而在 Windows 上 floating 这一档会被 Electron 特意"插到任务栏之后"（内部走 MoveBehindTaskBarIfNeeded）。当任务栏处于自动隐藏、或系统没有独立 GPU（虚拟机 / 软件合成）时，这一步会把小组件踢出置顶层，于是被普通窗口盖住；而且被踢出后 Electron 仍以为自己置顶，再调一次也往往不真正下发，所以"重启无效、怎么切也拉不回来"',
+      '这也解释了"为什么早先 1.4 版本没这问题"：与代码改动无关，是当时的显示配置（本机 2026-09-17 工作区从 1920×1040 变为 2240×1360）改变了任务栏/合成状态，才触发了这条 Windows 路径',
+      '修复方式（核心）：新增 forceTopMost()，显式把层级指定为 "screen-saver"（置顶强度不变，但不走"插到任务栏之后"那条路），并"先关后开"强制重新下发一次层级，再配合 moveTop() 抬到 z 序最前；所有涉及置顶的路径统一走它：窗口显示 / 获焦 / 设置里改置顶 / 设置窗关闭 / 托盘「显示全部小组件」/「一键置顶」',
+      '附带修复：「一键置顶」改为按配置真值翻转（不再依赖会失真的窗口状态查询，避免"切一下就再也切不回来"）；「显示全部小组件」对已显示的窗口也会强制置顶一次（此前已显示的窗口不触发显示事件，点了等于没反应）',
+      '自动自愈：搭现有 30 秒行情刷新周期顺带重新置顶一次（不新增定时器，开销可忽略），窗口被静默遮挡时也能自己恢复',
+      '手动自救：托盘右键新增「重新置顶（被遮挡时点这里）」，随时可立即强制恢复',
+      '新增：位置不再受屏幕分辨率影响（用户 2026-09-21 要求）。以前位置存的是绝对像素，换显示器 / 改分辨率或缩放后就会"明明选的右下角却跑到别处"；现在改存"九宫格锚点"（上下左右等 9 个方位），每次启动都按当前屏幕重新计算，分辨率怎么变都严丝合缝贴对',
+      '升级即生效：把老版本里"只记了像素"的位置自动换算成锚点 / 相对位置（启动时一次性完成，之后不再改动），所以升级上来无需重新手动摆一遍，立刻就能"换分辨率不跑偏"',
+      '新增：手动拖到屏幕中间的位置也做了分辨率适配 —— 记成相对位置（占屏幕的百分比），换分辨率后按比例还原，不会跑偏',
+      '新增：运行中改分辨率 / 接换显示器也会立即自动摆正（监听屏幕变化事件），不用重启',
+      '调整：设置窗口默认高度改为「屏幕高度的一半」（用户 2026-09-21 要求），并保证不超过可用工作区',
+      '改进：异动提醒的系统通知以前显示成「无应用名、无图标」的最简小卡片（用户 2026-09-22 反馈"为什么这么小"）。原因是通知的"应用身份"对不上：程序里写的是 Marketmonitor，而安装包的应用标识（appId）是 com.yohoky.marketmonitor，两者不一致；同时安装时生成的开始菜单快捷方式里也没有写入应用标识，于是 Windows 无法把这条通知归属到本应用，只能用最简样式显示',
+      '改进：现在统一了应用标识，并补上该标识的显示名与图标注册（写在当前用户注册表，不需要管理员权限，程序退出后也保留），系统通知会正常显示应用名与大图标',
+      '改进：系统通知附带 256×256 的应用图标',
+    ],
+  },
   {
     v: '1.5.6', date: '2026-09-18',
     items: [
@@ -3466,11 +3751,26 @@ if (triggered('test-alert') || process.env.MM_TEST_ALERT === '1') {
   if (app.isReady()) done(); else app.once('ready', done);
 } else if (gotSingleLock) {
   app.whenReady().then(() => {
+    ensureAppIdentity();   // 补 AUMID 的显示名/图标，让 Windows 通知能归属到本应用（异步、失败静默）
     buildAppMenu();
+    // 老配置一次性迁移：把"只记了绝对像素"的手动位置转成锚点/比例表达。
+    // 必须放在建窗【之前】——否则首屏仍按旧像素落位，换分辨率才会纠偏，体验不一致。
+    migrateLegacyPositions();
     syncWidgetWindows(true);   // 按 store.lists 把每个列表的窗口都建起来
     createTray();
     tick();
     startUpdateLoop();         // 打包版：启动 20 秒后静默查一次更新，此后每 24h 一次
+
+    // 分辨率 / 缩放 / 显示器变化时，把所有小组件按锚点或相对比例重新摆一遍 ——
+    // 这是"位置不受分辨率影响"的运行时保障（启动时由 ready-to-show 负责）。
+    const onDisplayChange = () => {
+      try { eachWidget((w, id) => applyResolvedPosition(id)); } catch (e) { logErr('display-change', e); }
+    };
+    try {
+      screen.on('display-metrics-changed', onDisplayChange);
+      screen.on('display-added', onDisplayChange);
+      screen.on('display-removed', onDisplayChange);
+    } catch (e) { logErr('display-listen', e); }
   });
 }
 
