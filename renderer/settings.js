@@ -806,6 +806,7 @@ const alertThresholdUp = document.getElementById('alert-threshold-up');
 const alertThresholdDown = document.getElementById('alert-threshold-down');
 const alertCooldown = document.getElementById('alert-cooldown');
 const alertSound = document.getElementById('alert-sound');
+const alertBigCard = document.getElementById('alert-bigcard');
 const alertTrading = document.getElementById('alert-trading');
 const alertMarket = document.getElementById('alert-market');
 
@@ -831,6 +832,7 @@ function renderAlerts() {
   if (alertThresholdUp) alertThresholdUp.value = a.thresholdUp ?? 3.9;
   if (alertThresholdDown) alertThresholdDown.value = a.thresholdDown ?? 3.9;
   if (alertSound) alertSound.checked = a.sound !== false;
+  if (alertBigCard) alertBigCard.checked = a.bigCard !== false;
   if (alertTrading) alertTrading.checked = a.tradingHours !== false;
   if (alertMarket) alertMarket.value = ['a', 'hk', 'both'].includes(a.market) ? a.market : 'a';
   if (alertCooldown) {
@@ -860,6 +862,7 @@ function readThreshold(el, fallback) {
 
 alertEnabled?.addEventListener('change', () => saveAlerts({ enabled: alertEnabled.checked }));
 alertSound?.addEventListener('change', () => saveAlerts({ sound: alertSound.checked }));
+alertBigCard?.addEventListener('change', () => saveAlerts({ bigCard: alertBigCard.checked }));
 alertTrading?.addEventListener('change', () => saveAlerts({ tradingHours: alertTrading.checked }));
 alertMarket?.addEventListener('change', () => saveAlerts({ market: alertMarket.value }));
 alertCooldown?.addEventListener('change', () => saveAlerts({ cooldownMs: parseInt(alertCooldown.value, 10) }));

@@ -13,7 +13,7 @@
         <h1>Marketmonitor 设置</h1>
         <p class="sub">每个「监控列表」是一个独立的悬浮小窗口，可分别监控自选股 / 板块指数 / 基金等，互不干扰</p>
       </div>
-      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）">v1.5.7</span>
+      <span class="ver" id="app-ver" title="版本号 / 发布日期（帮助 → 关于）">v1.5.8</span>
     </header>
 
     <!-- ============ 列表切换 ============ -->
@@ -211,10 +211,15 @@
         <label class="chk-label">
           <input type="checkbox" id="alert-sound" /> 提示音
         </label>
+        <label class="chk-label" title="右下角自绘大字提醒卡，不经过 Windows 通知，故不受系统通知设置影响">
+          <input type="checkbox" id="alert-bigcard" /> 右下角大提醒卡
+        </label>
       </div>
       <div class="card-desc" style="margin-top:6px">
         涨幅、跌幅阈值<b>可分别设置</b>（例如涨 3.9% / 跌 5%）。取消勾选即关闭该方向提醒。<br/>
-        触发后：系统通知 + 提示音 + 该列表小组件对应行闪烁。冷却期内同一只不重复打扰。
+        触发后：系统通知 + 提示音 + 该列表小组件对应行闪烁。冷却期内同一只不重复打扰。<br/>
+        <b>右下角大提醒卡</b>：程序自己画的置顶大卡片（大字 + 涨红跌绿 + 名称/价格，约 5 秒淡出），
+        不走 Windows 通知通道，因此<b>开免打扰 / 关通知也不会被拦掉</b>；如果不想它出现，取消勾选即可。
       </div>
     </section>
 
@@ -332,9 +337,9 @@
     </section>
 
     <section class="card" id="about-card">
-      <div class="card-title"><span class="bar"></span>关于与更新 <span class="badge" id="about-ver">v1.5.7</span></div>
+      <div class="card-title"><span class="bar"></span>关于与更新 <span class="badge" id="about-ver">v1.5.8</span></div>
       <div class="size-row">
-        <span class="card-desc" style="flex:0 0 auto;min-width:170px">当前版本　<b id="about-version">v1.5.7</b></span>
+        <span class="card-desc" style="flex:0 0 auto;min-width:170px">当前版本　<b id="about-version">v1.5.8</b></span>
         <span class="card-desc">发布日期　<b id="about-builddate">—</b></span>
       </div>
       <div class="size-row" style="margin-top:8px">

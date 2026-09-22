@@ -210,6 +210,9 @@ const DEFAULT_ALERTS = {
   cooldownMs: 180000,    // 同一只 3 分钟内不重复提醒，防刷屏
   tradingHours: true,    // 仅开盘时段提醒（默认开启，周末除外）
   market: 'a',           // 提醒市场：a(A股) / hk(港股) / both(A股+港股)
+  // v1.5.8：屏幕右下角「大提醒卡」—— 自绘的置顶大卡片，大字显示名称/价格/涨跌幅，
+  // 几秒后淡出。它不经过 Windows 通知系统，因此不受"专注助手 / 通知设置"影响。
+  bigCard: true,
 };
 
 // ---------- 邮件推送配置（全局：发件账号 + 1~5 个收件邮箱槽位）----------
@@ -455,6 +458,8 @@ function normalizeAlerts(raw) {
     cooldownMs: isFinite(cd) && cd >= 0 ? cd : DEFAULT_ALERTS.cooldownMs,
     tradingHours: r['tradingHours'] !== undefined ? (String(r['tradingHours']) !== 'false') : DEFAULT_ALERTS.tradingHours,
     market: ['a', 'hk', 'both'].includes((r['market'] || '').toLowerCase()) ? String(r['market']).toLowerCase() : DEFAULT_ALERTS.market,
+    // v1.5.8 大提醒卡开关（默认开；只有显式写 false 才关）
+    bigCard: r['bigCard'] !== undefined ? (String(r['bigCard']) !== 'false') : DEFAULT_ALERTS.bigCard,
   };
 }
 
@@ -682,6 +687,7 @@ function normalizeList(raw, id, fallbackName, mailFallback) {
       enabled: r.alertEnabled, thresholdUp: r.alertUp, thresholdDown: r.alertDown,
       direction: r.alertDirection, sound: r.alertSound, cooldownMs: r.alertCooldownMs,
       tradingHours: r.alertTradingHours, market: r.alertMarket,
+      bigCard: r.alertBigCard,
       ...nested,
     }),
     mail: normalizeMail({
@@ -906,6 +912,8 @@ function saveConfig() {
       lines.push('alertCooldownMs=' + a.cooldownMs);
       lines.push('alertTradingHours=' + (a.tradingHours ? 'true' : 'false'));
       lines.push('alertMarket=' + (['a', 'hk', 'both'].includes(a.market) ? a.market : 'a'));
+      // v1.5.8：右下角大提醒卡开关（默认开，写 false 才关）
+      lines.push('alertBigCard=' + (a.bigCard !== false ? 'true' : 'false'));
       lines.push('mailboxes=' + ((l.mail?.mailboxes || []).join(',')));
       lines.push('digestEnabled=' + (l.mail?.digestEnabled ? 'true' : 'false'));
       lines.push('digestIntervalMin=' + (l.mail?.digestIntervalMin ?? DEFAULT_DIGEST_MIN));
@@ -1282,6 +1290,145 @@ function alertIcon() {
   return _alertIcon || undefined;
 }
 
+// ---------- 右下角「大提醒卡」（v1.5.8）----------
+// 为什么自绘：Windows 系统通知的尺寸由系统模板固定（title + 单行正文就是最小档，Electron
+// 不暴露更大的模板），而且还会被「专注助手 / 通知设置」拦掉。大提醒卡是我们自己的置顶窗口：
+// 大字 + 涨红跌绿 + 名称/价格，几秒淡出，完全不经过系统通知通道。
+// 置顶复用 v1.5.7 修好的 forceTopMost（screen-saver level），确保它不会被任何窗口压住。
+const ALERT_CARD_W = 380, ALERT_CARD_H = 132, ALERT_CARD_MARGIN = 20;
+const ALERT_CARD_HOLD_MS = 4200;   // 页面内停留（页面自己用 CSS 淡入淡出）
+const ALERT_CARD_LIFE_MS = 4900;   // 主进程到点隐藏：比页面淡出结束稍晚，保证动画播完
+
+// 卡片页面内联在这里（不新增文件 → 热部署链路只需替换既有 js）。涨红跌绿按国内习惯。
+const ALERT_CARD_HTML = `<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+  html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent;
+    font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+    -webkit-user-select:none;user-select:none;cursor:default}
+  .card{position:absolute;inset:0;box-sizing:border-box;border-radius:14px;padding:14px 18px;
+    background:rgba(22,24,30,.96);border:1px solid rgba(255,255,255,.10);
+    box-shadow:0 12px 32px rgba(0,0,0,.48);
+    display:flex;flex-direction:column;justify-content:center;gap:5px;
+    opacity:0;transform:translateY(12px) scale(.97);
+    transition:opacity .18s ease,transform .18s ease}
+  .card.show{opacity:1;transform:none}
+  .top{display:flex;align-items:center;gap:8px}
+  .arrow{font-size:20px;line-height:1}
+  .name{font-size:19px;font-weight:700;color:#f2f3f5;letter-spacing:.5px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pct{font-size:34px;font-weight:800;line-height:1.05;letter-spacing:-.5px}
+  .up{color:#ff4d4f}
+  .down{color:#00c86f}
+  .bot{display:flex;align-items:baseline;gap:10px;font-size:13px;color:#9aa0a6}
+  .price{color:#d7dae0;font-weight:600;font-size:14px}
+  .list{margin-left:auto;font-size:12px;color:#8b93a1;background:rgba(255,255,255,.07);
+    padding:1px 8px;border-radius:9px;white-space:nowrap}
+</style></head>
+<body>
+  <div class="card" id="card">
+    <div class="top"><span class="arrow" id="arrow">&#128200;</span><span class="name" id="name"></span></div>
+    <div class="pct up" id="pct">+0.00%</div>
+    <div class="bot"><span id="sym"></span><span class="price" id="price"></span><span class="list" id="list"></span></div>
+  </div>
+<script>
+  var card = document.getElementById('card');
+  var hideTimer = null;
+  window.__renderAlert = function (d) {
+    d = d || {};
+    document.getElementById('arrow').textContent = d.up ? '\\uD83D\\uDCC8' : '\\uD83D\\uDCC9';
+    document.getElementById('name').textContent = d.name || '';
+    var pct = document.getElementById('pct');
+    pct.textContent = (d.up ? '+' : '') + d.changePct + '%';
+    pct.className = 'pct ' + (d.up ? 'up' : 'down');
+    document.getElementById('sym').textContent = d.symbol || '';
+    document.getElementById('price').textContent = d.price || '';
+    document.getElementById('list').textContent = d.listName || '';
+    card.classList.remove('show');
+    void card.offsetWidth;                 // 强制重排：连续触发时淡入动画能重放
+    card.classList.add('show');
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(function () { card.classList.remove('show'); }, ${ALERT_CARD_HOLD_MS});
+  };
+</script></body></html>`;
+
+let alertCardWindow = null;
+let alertCardHideTimer = null;
+
+// 卡片落点：右下角（与九宫格 bottom-right 同口径：留 EDGE_MARGIN 量级的边距）
+function alertCardPosition() {
+  try {
+    const wa = screen.getPrimaryDisplay().workArea;
+    return {
+      x: wa.x + wa.width - ALERT_CARD_W - ALERT_CARD_MARGIN,
+      y: wa.y + wa.height - ALERT_CARD_H - ALERT_CARD_MARGIN,
+    };
+  } catch (_) { return { x: 0, y: 0 }; }
+}
+
+// 惰性创建：不占用常驻窗口；首次触发时建一次，之后复用同一个窗口
+function ensureAlertCardWindow() {
+  if (alertCardWindow && !alertCardWindow.isDestroyed()) return alertCardWindow;
+  const p = alertCardPosition();
+  const win = new BrowserWindow({
+    width: ALERT_CARD_W, height: ALERT_CARD_H, x: p.x, y: p.y,
+    frame: false, transparent: true, backgroundColor: '#00000000',
+    resizable: false, movable: false, minimizable: false, maximizable: false,
+    closable: false, skipTaskbar: true, focusable: false, hasShadow: false,
+    show: false,
+    alwaysOnTop: false,   // 构造项只能落默认 floating，创建后统一走 forceTopMost
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  });
+  // 纯提示窗口：鼠标事件穿透，避免它挡住右下角托盘区的点击
+  try { win.setIgnoreMouseEvents(true); } catch (_) {}
+  win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(ALERT_CARD_HTML));
+  win.webContents.once('did-finish-load', () => { win.__mmReady = true; });
+  forceTopMost(win, true);
+  win.on('closed', () => { alertCardWindow = null; });
+  alertCardWindow = win;
+  return win;
+}
+
+// 把数据推给卡片页面（页面里定义了 window.__renderAlert）
+function pushAlertCard(win, payload) {
+  if (!win || win.isDestroyed()) return false;
+  if (!win.__mmReady) return false;                 // 首次还在加载：交给 did-finish-load 回调
+  try {
+    win.webContents.executeJavaScript(
+      'window.__renderAlert && window.__renderAlert(' + JSON.stringify(payload) + ');', true
+    ).catch(() => {});
+    return true;
+  } catch (_) { return false; }
+}
+
+// 弹一次大提醒卡（不抢焦点；每次显示都重新下发置顶）
+function showAlertCard(a, list) {
+  try {
+    const win = ensureAlertCardWindow();
+    const p = alertCardPosition();
+    try { win.setPosition(p.x, p.y); } catch (_) {}
+    const payload = {
+      up: !!a.up,
+      name: a.name || a.symbol || '',
+      symbol: a.symbol || '',
+      price: (a.price === undefined || a.price === null) ? '' : Number(a.price).toFixed(2),
+      changePct: Number(a.changePct || 0).toFixed(2),
+      listName: list ? list.name : '',
+    };
+    if (!pushAlertCard(win, payload)) {
+      win.webContents.once('did-finish-load', () => {
+        win.__mmReady = true;
+        pushAlertCard(win, payload);
+      });
+    }
+    try { win.showInactive(); } catch (_) {}
+    forceTopMost(win, true);
+    clearTimeout(alertCardHideTimer);
+    alertCardHideTimer = setTimeout(() => {
+      try { if (alertCardWindow && !alertCardWindow.isDestroyed()) alertCardWindow.hide(); } catch (_) {}
+    }, ALERT_CARD_LIFE_MS);
+  } catch (e) { logErr('showAlertCard', e); }
+}
+
 // 触发一次提醒：系统通知 + 推送到【该列表】的小组件（提示音 / 闪烁 / 弹窗）
 function fireAlert(a, list) {
   const l = list || null;
@@ -1304,6 +1451,8 @@ function fireAlert(a, list) {
       n.show();
     }
   } catch (_) {}
+  // 自绘大提醒卡：不受 Windows 通知设置影响；开关关闭时不弹
+  if (!l || !l.alerts || l.alerts.bigCard !== false) showAlertCard(a, l);
   if (l) sendToList(l.id, 'alert', a);
   console.log('[alert]', l ? l.id : '-', title, body);
 }
@@ -3448,6 +3597,17 @@ const REPO_URL = 'https://github.com/yohoky/marketmonitor';
 // 版本改动记录（只记 1.4.x，1.4.0 之前不收录）——设置页「关于」卡片直接渲染本数组。
 // 以后发新版只需在最前面加一条，渲染逻辑不用动。
 const CHANGELOG = [
+  {
+    v: '1.5.8', date: '2026-09-22',
+    items: [
+      '新增：右下角「大提醒卡」（用户 2026-09-22 要求）。触发异动提醒时，在屏幕右下角弹出一张程序自绘的大卡片：大号涨跌幅数字 + 名称 / 代码 / 价格，涨红跌绿（国内习惯），页面内约 4.2 秒后淡出、主进程 4.9 秒后隐藏窗口',
+      '为什么自绘：Windows 系统通知的尺寸由系统模板固定（标题 + 单行正文就是最小档），程序无法让它变大；而且系统通知还会被「专注助手 / 免打扰 / 通知设置」直接拦掉。大提醒卡是我们自己的置顶窗口，完全不走系统通知通道，因此不受 Windows 通知设置影响',
+      '置顶复用 v1.5.7 修好的 forceTopMost（screen-saver 层级），每次弹出都重新下发一次置顶，确保不会被其它窗口压住',
+      '大提醒卡为纯提示窗口：不抢焦点（不打断当前输入）、不占任务栏、鼠标点击穿透（不会挡住右下角托盘区的操作），鼠标事件全部透传给下方窗口',
+      '新增：大提醒卡开关（设置 → 异动提醒 → 「右下角大提醒卡」，默认开）。取消勾选后只保留系统通知 / 提示音 / 小组件闪烁，不再弹出大卡',
+      '实现方式：卡片页面内联在代码里（不新增物理文件），热部署仍只需替换 js 文件',
+    ],
+  },
   {
     v: '1.5.7', date: '2026-09-21',
     items: [
